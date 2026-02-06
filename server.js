@@ -9,16 +9,16 @@ import bracketRoutes from "./routes/bracketRoutes.js";
 import contactRoutes from "./routes/contactRoutes.js";
 import eventRoutes from "./routes/eventRoutes.js";
 import googleSyncRoutes from "./routes/googleSyncRoutes.js";
-import matchRoutes from "./routes/matchRoutes.js";
 import leagueRoutes from "./routes/leagueRoutes.js";
+import matchRoutes from "./routes/matchRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js"; // Added Notification Routes Import
 import paymentRoutes from "./routes/paymentRoutes.js"; // Added Payment Routes
 import playerDashboardRoutes from "./routes/playerDashboardroutes.js";
 import publicRoutes from "./routes/publicRoutes.js";
 import teamRoutes from "./routes/teamRoutes.js";
+import tempSeedRoutes from "./routes/tempSeedRoutes.js"; // Seed routes for testing
+
 dotenv.config({ quiet: true });
-
-
 
 const app = express();
 
@@ -40,6 +40,7 @@ app.use("/api/apartments", apartmentRoutes);
 app.use("/api/teams", teamRoutes);
 app.use("/api/notifications", notificationRoutes); // Mounted Notification Routes
 app.use("/api/public", publicRoutes);
+app.use("/api/seed", tempSeedRoutes); // Seed routes (for testing only - remove in production)
 
 
 const PORT = process.env.PORT || 5000;

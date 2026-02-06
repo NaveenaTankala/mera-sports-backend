@@ -17,10 +17,10 @@ export const getPlayerDetails = async (req, res) => {
     try {
         const { id } = req.params;
 
-        const { data: player, error } = await supabaseAdmin.from("users").select("*").eq("id", id).single();
+        const { data: player, error } = await supabaseAdmin.from("users").select("*").eq("id", id).maybeSingle();
         if (error) throw error;
 
-        const { data: schoolDetails } = await supabaseAdmin.from("player_school_details").select("*").eq("player_id", id).single();
+        const { data: schoolDetails } = await supabaseAdmin.from("player_school_details").select("*").eq("player_id", id).maybeSingle();
         if (schoolDetails) {
             player.school = {
                 name: schoolDetails.school_name,

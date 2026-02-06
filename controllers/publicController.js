@@ -7,7 +7,7 @@ export const getPublicSettings = async (req, res) => {
             .from("platform_settings")
             .select("platform_name, logo_url, support_email, support_phone, logo_size, registration_config")
             .eq("id", 1)
-            .single();
+            .maybeSingle();
 
         if (error) throw error;
 

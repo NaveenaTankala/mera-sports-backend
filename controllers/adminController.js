@@ -4,7 +4,11 @@ import { uploadBase64 } from "../utils/uploadHelper.js";
 // GET /api/admin/list-admins
 export const listAdmins = async (req, res) => {
     try {
-        const { data: admins, error } = await supabaseAdmin.from("users").select("id, name, email, role, verification").eq("role", "admin").eq("verification", "verified");
+        // Fetch both admin and superadmin roles
+        const { data: admins, error } = await supabaseAdmin
+            .from("users")
+            .select("id, name, email, role, verification, created_at")
+            .in("role", ["admin", "superadmin"]);
         if (error) throw error;
         res.json({ success: true, admins });
     } catch (err) {
@@ -106,6 +110,43 @@ export const getDashboardStats = async (req, res) => {
     } catch (err) {
         console.error("DASHBOARD STATS ERROR:", err);
         res.status(500).json({ message: "Failed to fetch dashboard stats" });
+    }
+};
+
+// POST /api/admin/update-admin-role/:id
+export const updateAdminRole = async (req, res) => {
+    try {
+        // Only superadmins can update roles
+        if (req.user.role !== 'superadmin') {
+            return res.status(403).json({ message: "Only superadmins can update admin roles" });
+        }
+
+        const { role } = req.body;
+        const targetAdminId = req.params.id;
+        const currentUserId = req.user.id;
+
+        // Validate role
+        if (role !== 'admin' && role !== 'superadmin') {
+            return res.status(400).json({ message: "Invalid role. Must be 'admin' or 'superadmin'" });
+        }
+
+        // Prevent self-demotion (superadmin cannot demote themselves)
+        if (targetAdminId === currentUserId && role === 'admin') {
+            return res.status(400).json({ message: "You cannot demote yourself" });
+        }
+
+        // Update role
+        const { error } = await supabaseAdmin
+            .from("users")
+            .update({ role })
+            .eq("id", targetAdminId);
+
+        if (error) throw error;
+
+        res.json({ success: true, message: `Admin role updated to ${role}` });
+    } catch (err) {
+        console.error("UPDATE ADMIN ROLE ERROR:", err);
+        res.status(500).json({ message: "Failed to update admin role" });
     }
 };
 

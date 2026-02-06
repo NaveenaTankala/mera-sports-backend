@@ -94,7 +94,7 @@ export const getCategoryDraw = async (req, res) => {
                     .eq("event_id", eventId)
                     .ilike("category", `%${baseCategory}%`)
                     .order("created_at", { ascending: true });
-                
+
                 if (!partialError && partialData && partialData.length > 0) {
                     data = partialData;
                     error = null;
@@ -166,19 +166,19 @@ export const initBracket = async (req, res) => {
         const { data: existing } = await checkQuery;
 
         if (existing && existing.length > 0) {
-            const hasMedia = existing.some(b => b.mode === 'MEDIA' && 
+            const hasMedia = existing.some(b => b.mode === 'MEDIA' &&
                 ((b.media_urls && b.media_urls.length > 0) || b.pdf_url));
             const hasBracket = existing.some(b => b.mode === 'BRACKET');
 
             if (hasMedia) {
-                return res.status(400).json({ 
+                return res.status(400).json({
                     message: "Category already has media uploads. Cannot create bracket. Delete all media first.",
                     code: "MODE_CONFLICT"
                 });
             }
 
             if (hasBracket) {
-                return res.status(400).json({ 
+                return res.status(400).json({
                     message: "Bracket already exists for this category",
                     code: "BRACKET_EXISTS"
                 });
@@ -216,7 +216,7 @@ export const initBracket = async (req, res) => {
             .from("event_brackets")
             .insert(insertData)
             .select()
-            .single();
+            .maybeSingle();
 
         if (error) throw error;
 
@@ -262,7 +262,7 @@ export const uploadCategoryMedia = async (req, res) => {
         if (existing && existing.length > 0) {
             const hasBracket = existing.some(b => b.mode === 'BRACKET');
             if (hasBracket) {
-                return res.status(400).json({ 
+                return res.status(400).json({
                     message: "Category already has bracket. Cannot upload media. Delete bracket first.",
                     code: "MODE_CONFLICT"
                 });
@@ -271,7 +271,7 @@ export const uploadCategoryMedia = async (req, res) => {
 
         // Upload files
         const uploadedMedia = [];
-        
+
         if (files && Array.isArray(files)) {
             for (const file of files) {
                 if (file.url && file.url.startsWith('data:')) {
@@ -316,14 +316,14 @@ export const uploadCategoryMedia = async (req, res) => {
             const existingUrls = existingMedia.media_urls || [];
             const newUrls = [...existingUrls, ...uploadedMedia];
             const finalPdfUrl = hasPdfField ? pdfUrl : existingMedia.pdf_url;
-            
+
             // Check if all media is deleted (no media URLs and no PDF)
             const hasNoMedia = (!newUrls || newUrls.length === 0) && !finalPdfUrl;
-            
+
             const updatePayload = {
                 updated_at: new Date().toISOString()
             };
-            
+
             if (hasNoMedia) {
                 // Clear mode and all media-related fields to allow bracket creation
                 updatePayload.mode = null;
@@ -339,17 +339,17 @@ export const uploadCategoryMedia = async (req, res) => {
                 updatePayload.media_urls = newUrls;
                 updatePayload.pdf_url = finalPdfUrl;
             }
-            
+
             const { data, error } = await supabaseAdmin
                 .from("event_brackets")
                 .update(updatePayload)
                 .eq("id", existingMedia.id)
                 .select()
-                .single();
+                .maybeSingle();
 
             if (error) throw error;
-            res.json({ 
-                success: true, 
+            res.json({
+                success: true,
                 draw: data,
                 modeCleared: hasNoMedia
             });
@@ -374,7 +374,7 @@ export const uploadCategoryMedia = async (req, res) => {
                 .from("event_brackets")
                 .insert(insertData)
                 .select()
-                .single();
+                .maybeSingle();
 
             if (error) throw error;
             res.json({ success: true, draw: data });
@@ -392,7 +392,7 @@ export const uploadCategoryMedia = async (req, res) => {
 export const updateBracketMatch = async (req, res) => {
     try {
         const { id: eventId, categoryId } = req.params;
-        const { categoryLabel, roundName, matchId, player1, player2, matchIndex, deleteMatch } = req.body;
+        const { categoryLabel, roundName, matchId, player1, player2, matchIndex, deleteMatch, updatePlayerRanks, playerRanks } = req.body;
 
         if (!eventId || (!categoryId && !categoryLabel)) {
             return res.status(400).json({ message: "Event ID and Category required" });
@@ -420,6 +420,37 @@ export const updateBracketMatch = async (req, res) => {
 
         const bracket = brackets[0];
         const bracketData = bracket.bracket_data || { rounds: [], players: [] };
+
+        // Handle player ranks update
+        if (updatePlayerRanks === true && playerRanks !== undefined) {
+            bracketData.playerRanks = playerRanks;
+            
+            // Also store enableRanking toggle state if provided
+            if (req.body.enableRanking !== undefined) {
+                bracketData.enableRanking = req.body.enableRanking;
+            }
+            
+            const { data, error } = await supabaseAdmin
+                .from("event_brackets")
+                .update({
+                    round_name: bracket.round_name || LEGACY_ROUND_NAME_BRACKET,
+                    draw_type: "bracket",
+                    draw_data: bracketData,
+                    bracket_data: bracketData,
+                    updated_at: new Date().toISOString()
+                })
+                .eq("id", bracket.id)
+                .select()
+                .maybeSingle();
+
+            if (error) throw error;
+
+            return res.json({
+                success: true,
+                bracket: data,
+                message: "Player ranks updated successfully"
+            });
+        }
 
         // Find round
         let roundIndex = bracketData.rounds.findIndex(r => r.name === roundName);
@@ -457,7 +488,7 @@ export const updateBracketMatch = async (req, res) => {
                 })
                 .eq("id", bracket.id)
                 .select()
-                .single();
+                .maybeSingle();
 
             if (error) throw error;
 
@@ -482,18 +513,18 @@ export const updateBracketMatch = async (req, res) => {
         } else {
             // Update existing match
             const match = round.matches[foundMatchIndex];
-            
+
             // Validate: Player cannot appear twice in same round
             if (player1) {
                 const player1Id = typeof player1 === 'object' ? player1.id : player1;
-                const duplicate = round.matches.some((m, idx) => 
+                const duplicate = round.matches.some((m, idx) =>
                     idx !== foundMatchIndex && (
                         (m.player1 && (typeof m.player1 === 'object' ? m.player1.id : m.player1) === player1Id) ||
                         (m.player2 && (typeof m.player2 === 'object' ? m.player2.id : m.player2) === player1Id)
                     )
                 );
                 if (duplicate) {
-                    return res.status(400).json({ 
+                    return res.status(400).json({
                         message: "Player already assigned to another match in this round",
                         code: "DUPLICATE_PLAYER"
                     });
@@ -502,14 +533,14 @@ export const updateBracketMatch = async (req, res) => {
 
             if (player2) {
                 const player2Id = typeof player2 === 'object' ? player2.id : player2;
-                const duplicate = round.matches.some((m, idx) => 
+                const duplicate = round.matches.some((m, idx) =>
                     idx !== foundMatchIndex && (
                         (m.player1 && (typeof m.player1 === 'object' ? m.player1.id : m.player1) === player2Id) ||
                         (m.player2 && (typeof m.player2 === 'object' ? m.player2.id : m.player2) === player2Id)
                     )
                 );
                 if (duplicate) {
-                    return res.status(400).json({ 
+                    return res.status(400).json({
                         message: "Player already assigned to another match in this round",
                         code: "DUPLICATE_PLAYER"
                     });
@@ -541,7 +572,7 @@ export const updateBracketMatch = async (req, res) => {
             })
             .eq("id", bracket.id)
             .select()
-            .single();
+            .maybeSingle();
 
         if (error) throw error;
 
@@ -626,7 +657,7 @@ export const setMatchResult = async (req, res) => {
         // (Admin controls rounds via "Add Round". This avoids creating infinite rounds.)
         if (roundIndex < bracketData.rounds.length - 1) {
             const nextRound = bracketData.rounds[roundIndex + 1];
-            
+
             // Winner goes to deterministic slot based on match index (bracket-style)
             const nextMatchIndex = Math.floor(matchIndex / 2);
             if (!nextRound.matches[nextMatchIndex]) {
@@ -634,7 +665,7 @@ export const setMatchResult = async (req, res) => {
             }
 
             const nextMatch = nextRound.matches[nextMatchIndex];
-            
+
             // Determine which slot (player1 or player2) based on match position
             if (matchIndex % 2 === 0) {
                 nextMatch.player1 = winnerPlayer;
@@ -661,7 +692,7 @@ export const setMatchResult = async (req, res) => {
             })
             .eq("id", bracket.id)
             .select()
-            .single();
+            .maybeSingle();
 
         if (error) throw error;
 
@@ -683,7 +714,7 @@ export const setMatchResult = async (req, res) => {
 export const addBracketRound = async (req, res) => {
     try {
         const { id: eventId, categoryId } = req.params;
-        const { categoryLabel, autoSeed = true } = req.body;
+        const { categoryLabel, autoSeed = true, roundName } = req.body;
 
         if (!eventId || (!categoryId && !categoryLabel)) {
             return res.status(400).json({ message: "Event ID and Category required" });
@@ -715,17 +746,28 @@ export const addBracketRound = async (req, res) => {
         const bracketData = bracket.bracket_data || { rounds: [], players: [] };
         const currentRounds = Array.isArray(bracketData.rounds) ? bracketData.rounds : [];
 
-        // If no rounds exist, create Round 1 (empty matches; admin will add matches + players or use Auto Seed)
+        // Helper: choose the effective name for the new round.
+        // - If admin provided `roundName` from UI, prefer that.
+        // - Otherwise fall back to inferred label based on match count (existing behavior).
+        const getNextRoundName = (nextMatchCount, fallbackIndex) => {
+            if (roundName && typeof roundName === "string" && roundName.trim()) {
+                return roundName.trim();
+            }
+            return inferRoundLabelFromMatchCount(nextMatchCount, fallbackIndex);
+        };
+
+        // If no rounds exist, create first round with explicit/derived name
         if (currentRounds.length === 0) {
-            currentRounds.push({ name: "Round 1", matches: [] });
+            const initialName = getNextRoundName(0, 0) || "Round 1";
+            currentRounds.push({ name: initialName, matches: [] });
         } else {
             const prevRound = currentRounds[currentRounds.length - 1];
             const prevMatches = Array.isArray(prevRound.matches) ? prevRound.matches : [];
-            
+
             // Check if all matches have winners in bracket_data
             // Also check matches table for completed matches as fallback
             const allHaveWinnersInBracket = prevMatches.length > 0 && prevMatches.every((m) => m && m.winner && m[m.winner]);
-            
+
             // If bracket_data doesn't have all winners, check matches table
             if (!allHaveWinnersInBracket && prevRound.name) {
                 try {
@@ -736,23 +778,23 @@ export const addBracketRound = async (req, res) => {
                         .eq('event_id', eventId)
                         .eq('round_name', prevRound.name)
                         .eq('status', 'COMPLETED');
-                    
+
                     // Filter by categoryId if available (to avoid cross-category matches)
                     if (categoryId && isUuid(categoryId)) {
                         completedMatchesQuery = completedMatchesQuery.eq('category_id', categoryId);
                     } else if (categoryId) {
                         completedMatchesQuery = completedMatchesQuery.eq('category_id', categoryId);
                     }
-                    
+
                     const { data: completedMatches } = await completedMatchesQuery;
-                    
+
                     // Check if all non-BYE matches have winners in matches table
                     const nonByeMatches = prevMatches.filter(m => {
                         const hasPlayer1 = m.player1 && (m.player1.id || m.player1);
                         const hasPlayer2 = m.player2 && (m.player2.id || m.player2);
                         return hasPlayer1 && hasPlayer2; // Non-BYE matches have both players
                     });
-                    
+
                     if (completedMatches && completedMatches.length >= nonByeMatches.length) {
                         // All matches are completed in matches table, allow adding next round
                         // Winners will be synced from matches table during auto-seed
@@ -790,7 +832,7 @@ export const addBracketRound = async (req, res) => {
             }
 
             const nextMatchCount = Math.max(1, Math.ceil(prevMatches.length / 2));
-            const nextName = inferRoundLabelFromMatchCount(nextMatchCount, currentRounds.length);
+            const nextName = getNextRoundName(nextMatchCount, currentRounds.length);
 
             const nextRound = {
                 name: nextName,
@@ -801,7 +843,7 @@ export const addBracketRound = async (req, res) => {
                 // Auto-fill next round from previous round winners
                 // First, ensure we have winners from matches table if bracket_data doesn't have them
                 let winnersToUse = [];
-                
+
                 // Collect winners from bracket_data
                 for (let i = 0; i < prevMatches.length; i++) {
                     const m = prevMatches[i];
@@ -810,7 +852,7 @@ export const addBracketRound = async (req, res) => {
                         winnersToUse.push(winnerPlayer);
                     }
                 }
-                
+
                 // If bracket_data doesn't have all winners, fetch from matches table
                 if (winnersToUse.length < prevMatches.length && prevRound.name) {
                     try {
@@ -821,36 +863,36 @@ export const addBracketRound = async (req, res) => {
                             .eq('round_name', prevRound.name)
                             .eq('status', 'COMPLETED')
                             .order('match_index', { ascending: true });
-                        
+
                         // Filter by categoryId if available (to avoid cross-category matches)
                         if (categoryId && isUuid(categoryId)) {
                             completedMatchesQuery = completedMatchesQuery.eq('category_id', categoryId);
                         } else if (categoryId) {
                             completedMatchesQuery = completedMatchesQuery.eq('category_id', categoryId);
                         }
-                        
+
                         const { data: completedMatches } = await completedMatchesQuery;
-                        
+
                         if (completedMatches && completedMatches.length > 0) {
                             // Rebuild winners list from matches table
                             winnersToUse = [];
                             for (let i = 0; i < prevMatches.length; i++) {
                                 const bracketMatch = prevMatches[i];
                                 const matchIndex = i;
-                                
+
                                 // Find corresponding match in matches table
                                 const matchData = completedMatches.find(m => m.match_index === matchIndex);
-                                
+
                                 if (matchData && matchData.winner) {
                                     // Extract winner player from matches table
-                                    const winnerId = typeof matchData.winner === 'object' 
+                                    const winnerId = typeof matchData.winner === 'object'
                                         ? (matchData.winner.id || matchData.winner.player_id || matchData.winner)
                                         : matchData.winner;
-                                    
+
                                     // Find winner in bracket match players
                                     const bracketPlayer1Id = bracketMatch.player1?.id || bracketMatch.player1;
                                     const bracketPlayer2Id = bracketMatch.player2?.id || bracketMatch.player2;
-                                    
+
                                     let winnerPlayer = null;
                                     if (String(bracketPlayer1Id) === String(winnerId)) {
                                         winnerPlayer = bracketMatch.player1;
@@ -860,7 +902,7 @@ export const addBracketRound = async (req, res) => {
                                         // Use winner object directly from matches table
                                         winnerPlayer = matchData.winner;
                                     }
-                                    
+
                                     if (winnerPlayer) {
                                         winnersToUse.push(winnerPlayer);
                                     } else {
@@ -879,7 +921,7 @@ export const addBracketRound = async (req, res) => {
                         // If matches table fetch fails, use bracket_data winners
                     }
                 }
-                
+
                 // Populate next round with winners
                 for (let i = 0; i < winnersToUse.length; i++) {
                     const winnerPlayer = winnersToUse[i];
@@ -931,7 +973,7 @@ export const addBracketRound = async (req, res) => {
             })
             .eq("id", bracket.id)
             .select()
-            .single();
+            .maybeSingle();
 
         if (error) throw error;
 
@@ -1049,15 +1091,15 @@ export const deleteCategoryMedia = async (req, res) => {
             .update(updatePayload)
             .eq("id", draw.id)
             .select()
-            .single();
+            .maybeSingle();
 
         if (error) throw error;
 
         res.json({
             success: true,
             draw: data,
-            message: hasNoMedia 
-                ? "All media deleted. You can now create brackets for this category." 
+            message: hasNoMedia
+                ? "All media deleted. You can now create brackets for this category."
                 : "Media deleted successfully",
             modeCleared: hasNoMedia
         });
@@ -1120,7 +1162,7 @@ export const resetBracket = async (req, res) => {
             })
             .eq("id", bracket.id)
             .select()
-            .single();
+            .maybeSingle();
 
         if (error) throw error;
 
@@ -1268,7 +1310,7 @@ export const deleteBracketRound = async (req, res) => {
             })
             .eq("id", bracket.id)
             .select()
-            .single();
+            .maybeSingle();
 
         if (error) throw error;
 

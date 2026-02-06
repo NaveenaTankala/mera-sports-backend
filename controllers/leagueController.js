@@ -98,24 +98,26 @@ export const saveLeagueConfig = async (req, res) => {
         }
 
         // Clean and deduplicate participants
+        // IMPORTANT: preserve group assignment (p.group) so group mode survives reloads
         const participantMap = new Map();
         participants.forEach((p) => {
             if (p && p.id && p.name) {
                 const id = String(p.id);
                 const name = String(p.name);
+                const group = p.group || p.group_id || p.groupLabel || null;
                 // Only keep first occurrence if duplicate IDs exist
                 if (!participantMap.has(id)) {
-                    participantMap.set(id, { id, name });
+                    participantMap.set(id, { id, name, ...(group ? { group: String(group) } : {}) });
                 }
             }
         });
-        
+
         const cleanedParticipants = Array.from(participantMap.values());
 
         if (cleanedParticipants.length === 0) {
             return res.status(400).json({ success: false, message: "Participants must have id and name" });
         }
-        
+
         // Warn if duplicates were removed
         if (cleanedParticipants.length < participants.length) {
             console.warn(`Removed ${participants.length - cleanedParticipants.length} duplicate participant(s) from league config`);
@@ -165,7 +167,7 @@ export const saveLeagueConfig = async (req, res) => {
                 })
                 .eq("id", existing.id)
                 .select()
-                .single();
+                .maybeSingle();
 
             if (error) throw error;
 
@@ -194,7 +196,7 @@ export const saveLeagueConfig = async (req, res) => {
             .from("leagues")
             .insert(insertPayload)
             .select()
-            .single();
+            .maybeSingle();
 
         if (error) throw error;
 
@@ -254,9 +256,9 @@ export const deleteLeague = async (req, res) => {
         }
 
         if (!leagueRecord) {
-            return res.status(404).json({ 
-                success: false, 
-                message: "League configuration not found" 
+            return res.status(404).json({
+                success: false,
+                message: "League configuration not found"
             });
         }
 
@@ -268,7 +270,7 @@ export const deleteLeague = async (req, res) => {
 
             // CRITICAL FIX: Use safe in-memory filtering instead of dangerous fallback
             // This prevents accidentally deleting matches from other categories
-            
+
             // First, fetch all LEAGUE matches for this event
             const { data: allLeagueMatches, error: fetchMatchesError } = await supabaseAdmin
                 .from("matches")
@@ -285,17 +287,17 @@ export const deleteLeague = async (req, res) => {
                 const matchesToDelete = (allLeagueMatches || []).filter(m => {
                     const mCatId = m.category_id;
                     if (!mCatId) return false;
-                    
+
                     // Try exact match first
                     if (String(mCatId) === String(categoryIdForMatches)) {
                         return true;
                     }
-                    
+
                     // Try type-coerced match
                     if (mCatId == categoryIdForMatches) {
                         return true;
                     }
-                    
+
                     // If categoryIdForMatches is not available, use category_label matching
                     // This is a fallback but should be avoided
                     if (!categoryIdForMatches && categoryLabelForMatches) {
@@ -303,13 +305,13 @@ export const deleteLeague = async (req, res) => {
                         // This is why we require category_id
                         return false;
                     }
-                    
+
                     return false;
                 });
 
                 if (matchesToDelete.length > 0) {
                     const matchIds = matchesToDelete.map(m => m.id);
-                    
+
                     // Delete only the filtered matches
                     const { error: matchDeleteError } = await supabaseAdmin
                         .from("matches")
@@ -340,17 +342,17 @@ export const deleteLeague = async (req, res) => {
 
         return res.json({
             success: true,
-            message: deleteMatches 
+            message: deleteMatches
                 ? "League configuration and all associated matches deleted successfully"
                 : "League configuration deleted successfully (matches preserved)",
             deletedLeagueId: leagueRecord.id
         });
     } catch (err) {
         console.error("DELETE LEAGUE ERROR:", err);
-        return res.status(500).json({ 
-            success: false, 
+        return res.status(500).json({
+            success: false,
             message: "Failed to delete league configuration",
-            error: err.message 
+            error: err.message
         });
     }
 };

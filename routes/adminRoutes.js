@@ -5,6 +5,7 @@ import {
     getDashboardStats,
     listAdmins,
     rejectAdmin,
+    updateAdminRole,
     uploadAsset
 } from "../controllers/adminController.js";
 import {
@@ -37,6 +38,7 @@ const router = express.Router();
 router.get("/list-admins", verifyAdmin, listAdmins);
 router.post("/approve-admin/:id", verifyAdmin, approveAdmin);
 router.post("/reject-admin/:id", verifyAdmin, rejectAdmin);
+router.post("/update-admin-role/:id", verifyAdmin, updateAdminRole);
 router.delete("/delete-admin/:id", verifyAdmin, deleteAdmin);
 
 /* ================= DASHBOARD ================= */

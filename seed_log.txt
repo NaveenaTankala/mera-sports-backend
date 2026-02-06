@@ -1,0 +1,83 @@
+[2026-02-03T09:41:10.117Z] 🚀 Starting Event Seeding... connecting to https://mkeytghrgjbnxnhbxdkw.supabase.co
+[2026-02-03T09:46:38.463Z] 🚀 Starting Event Seeding... connecting to https://mkeytghrgjbnxnhbxdkw.supabase.co
+[2026-02-03T09:47:34.032Z] 🚀 Starting Event Seeding... connecting to https://mkeytghrgjbnxnhbxdkw.supabase.co
+[2026-02-03T10:57:32.640Z] 🚀 Starting Event Seeding... connecting to https://mkeytghrgjbnxnhbxdkw.supabase.co
+[2026-02-03T11:21:33.477Z] 🚀 Starting Event Seeding... connecting to https://mkeytghrgjbnxnhbxdkw.supabase.co
+[2026-02-03T11:44:49.147Z] 🚀 Starting Event Seeding... connecting to https://mkeytghrgjbnxnhbxdkw.supabase.co
+[2026-02-04T04:53:56.514Z] 🚀 Starting Fresh Test Event Seeding...
+[2026-02-04T04:53:56.549Z] 📡 Connecting to: https://mkeytghrgjbnxnhbxdkw.supabase.co
+[2026-02-04T04:53:56.550Z] 
+🧹 STEP 1: Cleaning up existing test data...
+[2026-02-04T04:53:57.041Z] Found 1 test event(s) to delete
+[2026-02-04T04:53:57.411Z] ✅ Deleted registrations for 1 event(s)
+[2026-02-04T04:53:57.486Z] ✅ Deleted test teams
+[2026-02-04T04:53:57.577Z] ✅ Deleted 1 test event(s)
+[2026-02-04T04:53:57.578Z] 
+👤 STEP 2: Setting up Super Admin...
+[2026-02-04T04:53:57.664Z] ✅ Using existing Super Admin: superadmin_1770111671357@merasports.com
+[2026-02-04T04:53:57.665Z] 
+👥 STEP 3: Creating test players...
+[2026-02-04T04:54:03.228Z] ✅ Deleted 32 existing test players
+[2026-02-04T04:54:14.401Z] ✅ Created 50/50 players
+[2026-02-04T04:54:14.403Z] 
+📋 STEP 4: Defining event categories...
+[2026-02-04T04:54:14.441Z] ✅ Defined 13 categories
+[2026-02-04T04:54:14.442Z] 
+🎯 STEP 5: Creating new event...
+[2026-02-04T04:54:14.511Z] ✅ Event Created: Mera Sports Championship 2026 (ID: 5)
+[2026-02-04T04:54:14.512Z] 
+📝 STEP 6: Registering players in all categories...
+[2026-02-04T04:54:14.512Z] 
+  Registering for: U-9 (Mixed) - Singles
+[2026-02-04T04:54:15.535Z]     ✅ Registered: 16, ❌ Failed: 0
+[2026-02-04T04:54:15.537Z] 
+  Registering for: U-11 (Male) - Singles
+[2026-02-04T04:54:16.594Z]     ✅ Registered: 16, ❌ Failed: 0
+[2026-02-04T04:54:16.596Z] 
+  Registering for: U-11 (Female) - Singles
+[2026-02-04T04:54:17.673Z]     ✅ Registered: 16, ❌ Failed: 0
+[2026-02-04T04:54:17.675Z] 
+  Registering for: U-13 (Male) - Singles
+[2026-02-04T04:54:18.719Z]     ✅ Registered: 16, ❌ Failed: 0
+[2026-02-04T04:54:18.720Z] 
+  Registering for: U-13 (Female) - Singles
+[2026-02-04T04:54:19.771Z]     ✅ Registered: 16, ❌ Failed: 0
+[2026-02-04T04:54:19.772Z] 
+  Registering for: U-15 (Male) - Singles
+[2026-02-04T04:54:20.803Z]     ✅ Registered: 16, ❌ Failed: 0
+[2026-02-04T04:54:20.804Z] 
+  Registering for: U-15 (Female) - Singles
+[2026-02-04T04:54:21.873Z]     ✅ Registered: 16, ❌ Failed: 0
+[2026-02-04T04:54:21.879Z] 
+  Registering for: U-15 (Mixed) - Team
+[2026-02-04T04:54:22.485Z]     ✅ Registered: 4, ❌ Failed: 0
+[2026-02-04T04:54:22.486Z] 
+  Registering for: Men's Singles (Male) - Singles
+[2026-02-04T04:54:23.533Z]     ✅ Registered: 16, ❌ Failed: 0
+[2026-02-04T04:54:23.535Z] 
+  Registering for: Men's Doubles (Male) - Doubles
+[2026-02-04T04:54:24.590Z]     ✅ Registered: 8, ❌ Failed: 0
+[2026-02-04T04:54:24.591Z] 
+  Registering for: Women's Singles (Female) - Singles
+[2026-02-04T04:54:25.646Z]     ✅ Registered: 16, ❌ Failed: 0
+[2026-02-04T04:54:25.647Z] 
+  Registering for: Women's Doubles (Female) - Doubles
+[2026-02-04T04:54:26.651Z]     ✅ Registered: 8, ❌ Failed: 0
+[2026-02-04T04:54:26.653Z] 
+  Registering for: Mixed Doubles (Mixed) - Doubles
+[2026-02-04T04:54:27.720Z]     ✅ Registered: 8, ❌ Failed: 0
+[2026-02-04T04:54:27.724Z] 
+============================================================
+[2026-02-04T04:54:27.724Z] 🎉 SEEDING COMPLETE!
+[2026-02-04T04:54:27.725Z] ============================================================
+[2026-02-04T04:54:27.726Z] ✅ Event ID: 5
+[2026-02-04T04:54:27.726Z] ✅ Event Name: Mera Sports Championship 2026
+[2026-02-04T04:54:27.727Z] ✅ Categories: 13
+[2026-02-04T04:54:27.727Z] ✅ Total Registrations: 172
+[2026-02-04T04:54:27.728Z] ❌ Failed Registrations: 0
+[2026-02-04T04:54:27.728Z] ✅ Players Created: 50
+[2026-02-04T04:54:27.729Z] 
+📌 Use this event to test all features!
+[2026-02-04T04:54:27.729Z] ============================================================
+[2026-02-04T04:54:27.729Z] 
+✅ Script completed successfully

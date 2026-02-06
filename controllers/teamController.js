@@ -15,7 +15,7 @@ export const getMyTeams = async (req, res) => {
 export const lookupPlayer = async (req, res) => {
     try {
         const { playerId } = req.params;
-        const { data: player, error } = await supabaseAdmin.from('users').select('id, first_name, last_name, dob, mobile, player_id, aadhaar').ilike('player_id', playerId).single();
+        const { data: player, error } = await supabaseAdmin.from('users').select('id, first_name, last_name, dob, mobile, player_id, aadhaar').ilike('player_id', playerId).maybeSingle();
         if (error || !player) return res.status(404).json({ success: false, message: "Player ID not found" });
 
         let age = "";
@@ -44,11 +44,11 @@ export const createTeam = async (req, res) => {
         const { team_name, sport, members } = req.body;
         const userId = req.user.id;
 
-        const { data: profile } = await supabaseAdmin.from('users').select('first_name, last_name, mobile').eq('id', userId).single();
+        const { data: profile } = await supabaseAdmin.from('users').select('first_name, last_name, mobile').eq('id', userId).maybeSingle();
         const captainName = profile ? `${profile.first_name} ${profile.last_name}`.trim() : "Unknown";
         const captainMobile = profile?.mobile || "";
 
-        const { data, error } = await supabaseAdmin.from('player_teams').insert([{ team_name, sport, captain_id: userId, captain_name: captainName, captain_mobile: captainMobile, members: members || [] }]).select().single();
+        const { data, error } = await supabaseAdmin.from('player_teams').insert([{ team_name, sport, captain_id: userId, captain_name: captainName, captain_mobile: captainMobile, members: members || [] }]).select().maybeSingle();
         if (error) throw error;
         res.json({ success: true, team: data });
     } catch (err) {
@@ -63,11 +63,11 @@ export const updateTeam = async (req, res) => {
         const { team_name, sport, members } = req.body;
         const userId = req.user.id;
 
-        const { data: team, error: fetchError } = await supabaseAdmin.from('player_teams').select('*').eq('id', id).single();
+        const { data: team, error: fetchError } = await supabaseAdmin.from('player_teams').select('*').eq('id', id).maybeSingle();
         if (fetchError || !team) return res.status(404).json({ message: "Team not found" });
         if (team.captain_id !== userId) return res.status(403).json({ message: "Unauthorized" });
 
-        const { data: updatedTeam, error } = await supabaseAdmin.from('player_teams').update({ team_name, sport, members: members || [] }).eq('id', id).select().single();
+        const { data: updatedTeam, error } = await supabaseAdmin.from('player_teams').update({ team_name, sport, members: members || [] }).eq('id', id).select().maybeSingle();
         if (error) throw error;
         res.json({ success: true, team: updatedTeam });
     } catch (err) {
@@ -81,7 +81,7 @@ export const deleteTeam = async (req, res) => {
         const { id } = req.params;
         const userId = req.user.id;
 
-        const { data: team, error: fetchError } = await supabaseAdmin.from('player_teams').select('*').eq('id', id).single();
+        const { data: team, error: fetchError } = await supabaseAdmin.from('player_teams').select('*').eq('id', id).maybeSingle();
         if (fetchError || !team) return res.status(404).json({ message: "Team not found" });
         if (team.captain_id !== userId) return res.status(403).json({ message: "Unauthorized" });
 

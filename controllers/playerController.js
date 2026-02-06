@@ -6,7 +6,7 @@ import { uploadBase64 } from "../utils/uploadHelper.js";
 export const getPlayerDashboard = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { data: player, error } = await supabaseAdmin.from("users").select("*").eq("id", userId).single();
+        const { data: player, error } = await supabaseAdmin.from("users").select("*").eq("id", userId).maybeSingle();
         if (error) throw error;
         if (!player) return res.status(404).json({ message: "Player not found" });
 
@@ -55,7 +55,7 @@ export const getPlayerDashboard = async (req, res) => {
             const txn = (transactions || []).find(t => (reg.transaction_id && t.id === reg.transaction_id) || (t.event_id === reg.event_id));
             let teamDetails = null;
             if (reg.team_id) {
-                const { data: team } = await supabaseAdmin.from("player_teams").select("*").eq("id", reg.team_id).single();
+                const { data: team } = await supabaseAdmin.from("player_teams").select("*").eq("id", reg.team_id).maybeSingle();
                 teamDetails = team;
             }
             return { ...reg, transactions: txn || null, team_details: teamDetails };
@@ -92,7 +92,7 @@ export const checkPassword = async (req, res) => {
     try {
         const { currentPassword } = req.body;
         if (!currentPassword) return res.status(400).json({ message: "Password required" });
-        const { data: user } = await supabaseAdmin.from("users").select("password").eq("id", req.user.id).single();
+        const { data: user } = await supabaseAdmin.from("users").select("password").eq("id", req.user.id).maybeSingle();
         if (!user || user.password !== currentPassword) return res.status(401).json({ correct: false, message: "Incorrect password" });
         res.json({ correct: true });
     } catch (err) { res.status(500).json({ message: "Server error" }); }
@@ -104,7 +104,7 @@ export const updateProfile = async (req, res) => {
         const userId = req.user.id;
         const { email, mobile, photos, apartment, street, city, state, pincode, country, gender } = req.body;
 
-        const { data: currentUser, error: fetchError } = await supabaseAdmin.from("users").select("*").eq("id", userId).single();
+        const { data: currentUser, error: fetchError } = await supabaseAdmin.from("users").select("*").eq("id", userId).maybeSingle();
         if (fetchError || !currentUser) return res.status(404).json({ message: "User not found" });
 
         const isSensitiveChange = (email && email.toLowerCase().trim() !== currentUser.email.toLowerCase().trim()) || (mobile && mobile !== currentUser.mobile);
@@ -170,7 +170,7 @@ export const changePassword = async (req, res) => {
             if (decoded.id !== req.user.id || decoded.type !== 'verification') throw new Error();
         } catch (e) { return res.status(403).json({ message: "Invalid token" }); }
 
-        const { data: user } = await supabaseAdmin.from("users").select("password").eq("id", req.user.id).single();
+        const { data: user } = await supabaseAdmin.from("users").select("password").eq("id", req.user.id).maybeSingle();
         if (user.password !== currentPassword) return res.status(401).json({ message: "Incorrect current password" });
 
         const { error } = await supabaseAdmin.from("users").update({ password: newPassword }).eq("id", req.user.id);
@@ -203,7 +203,7 @@ export const addFamilyMember = async (req, res) => {
     try {
         const { name, relation, age, gender } = req.body;
         if (!name || !relation) return res.status(400).json({ message: "Name/Relation required" });
-        const { data, error } = await supabaseAdmin.from("family_members").insert({ user_id: req.user.id, name, relation, age: age ? parseInt(age) : null, gender }).select().single();
+        const { data, error } = await supabaseAdmin.from("family_members").insert({ user_id: req.user.id, name, relation, age: age ? parseInt(age) : null, gender }).select().maybeSingle();
         if (error) throw error;
         res.json({ success: true, familyMember: data });
     } catch (err) { res.status(500).json({ message: "Failed to add family member" }); }
@@ -212,7 +212,7 @@ export const addFamilyMember = async (req, res) => {
 export const updateFamilyMember = async (req, res) => {
     try {
         const { name, relation, age, gender } = req.body;
-        const { data, error } = await supabaseAdmin.from("family_members").update({ name, relation, age: age ? parseInt(age) : null, gender }).eq("id", req.params.id).select().single();
+        const { data, error } = await supabaseAdmin.from("family_members").update({ name, relation, age: age ? parseInt(age) : null, gender }).eq("id", req.params.id).select().maybeSingle();
         if (error) throw error;
         res.json({ success: true, familyMember: data });
     } catch (err) { res.status(500).json({ message: "Failed to update family member" }); }

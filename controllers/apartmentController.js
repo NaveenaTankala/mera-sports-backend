@@ -69,7 +69,7 @@ export const addApartment = async (req, res) => {
         const { data: existing } = await supabaseAdmin.from("apartments").select("id").ilike("name", trimmedName).maybeSingle();
         if (existing) return res.json({ success: true, message: "Apartment already exists" });
 
-        const { data, error } = await supabaseAdmin.from("apartments").insert({ name: trimmedName, pincode: pincode || "", locality: locality || "", zone: zone || "" }).select().single();
+        const { data, error } = await supabaseAdmin.from("apartments").insert({ name: trimmedName, pincode: pincode || "", locality: locality || "", zone: zone || "" }).select().maybeSingle();
         if (error) throw error;
         res.json({ success: true, message: "Apartment added", apartment: data });
     } catch (error) { res.status(500).json({ success: false, message: "Failed to add apartment" }); }
@@ -85,7 +85,7 @@ export const updateApartment = async (req, res) => {
         if (locality !== undefined) updateData.locality = locality;
         if (zone !== undefined) updateData.zone = zone;
 
-        const { data, error } = await supabaseAdmin.from("apartments").update(updateData).eq("id", id).select().single();
+        const { data, error } = await supabaseAdmin.from("apartments").update(updateData).eq("id", id).select().maybeSingle();
         if (error) throw error;
         res.json({ success: true, message: "Apartment updated", apartment: data });
     } catch (error) { res.status(500).json({ success: false, message: "Failed to update" }); }

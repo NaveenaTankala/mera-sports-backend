@@ -86,7 +86,7 @@ export const verifyTransaction = async (req, res) => {
             .update({ status: "verified" })
             .eq("id", id)
             .select("player_id, registration_no, events(name)")
-            .single();
+            .maybeSingle();
 
         if (error) throw error;
         if (updatedReg) {
@@ -112,7 +112,7 @@ export const rejectTransaction = async (req, res) => {
             .update({ status: "rejected" })
             .eq("id", id)
             .select("player_id, registration_no, events(name)")
-            .single();
+            .maybeSingle();
 
         if (error) throw error;
         if (updatedReg) {
@@ -177,7 +177,7 @@ export const createEventNews = async (req, res) => {
         const { eventId, title, content, imageUrl, isHighlight } = req.body;
         const { data, error } = await supabaseAdmin.from("event_news")
             .insert({ event_id: eventId, title, content, image_url: imageUrl, is_highlight: isHighlight })
-            .select().single();
+            .select().maybeSingle();
         if (error) throw error;
         res.json({ success: true, news: data });
     } catch (err) { res.status(500).json({ message: "Failed to create news" }); }
@@ -188,7 +188,7 @@ export const updateEventNews = async (req, res) => {
         const { id } = req.params;
         const { title, content, imageUrl, isHighlight } = req.body;
         const { data, error } = await supabaseAdmin.from("event_news")
-            .update({ title, content, image_url: imageUrl, is_highlight: isHighlight }).eq("id", id).select().single();
+            .update({ title, content, image_url: imageUrl, is_highlight: isHighlight }).eq("id", id).select().maybeSingle();
         if (error) throw error;
         res.json({ success: true, news: data });
     } catch (err) { res.status(500).json({ message: "Failed to update news" }); }
@@ -218,12 +218,12 @@ export const saveBracket = async (req, res) => {
         const { eventId, category, roundName, drawType, drawData, pdfUrl } = req.body;
         let finalDrawData = drawData;
         let finalPdfUrl = null;
-        
+
         if (drawType === 'image') {
             // Handle multiple images format (new)
             if (drawData?.images && Array.isArray(drawData.images)) {
                 const uploadedImages = [];
-                
+
                 for (const img of drawData.images) {
                     // If image URL is base64, upload it
                     if (img.url?.startsWith('data:')) {
@@ -244,14 +244,14 @@ export const saveBracket = async (req, res) => {
                         });
                     }
                 }
-                
+
                 finalDrawData = { images: uploadedImages };
             }
             // Handle old single image format (backward compatibility)
             else if (drawData?.url?.startsWith('data:')) {
                 const url = await uploadBase64(drawData.url, 'event-assets', 'draws');
                 if (url) {
-                    finalDrawData = { 
+                    finalDrawData = {
                         images: [{
                             id: `img-${Date.now()}-${Math.random()}`,
                             url: url,
@@ -289,19 +289,19 @@ export const saveBracket = async (req, res) => {
         const { data: existing } = await supabaseAdmin.from("event_brackets").select("id, draw_type, draw_data").eq("event_id", eventId).eq("category", category).eq("round_name", roundName).maybeSingle();
 
         let result;
-        
+
         if (existing) {
             // Update existing bracket - preserve existing draw_data when only updating pdf_url
             const updateData = {};
-            
+
             // Always preserve existing draw_data first
             updateData.draw_data = existing.draw_data || {};
-            
+
             // Only update draw_type if provided
             if (drawType) {
                 updateData.draw_type = drawType;
             }
-            
+
             // Only update draw_data if new data is provided and different from existing
             if (finalDrawData && Object.keys(finalDrawData).length > 0) {
                 // Check if we're actually updating draw_data (not just pdf_url)
@@ -309,7 +309,7 @@ export const saveBracket = async (req, res) => {
                 const hasNewMatches = finalDrawData.matches && Array.isArray(finalDrawData.matches) && finalDrawData.matches.length > 0;
                 const hasExistingImages = existing.draw_data?.images && Array.isArray(existing.draw_data.images) && existing.draw_data.images.length > 0;
                 const hasExistingMatches = existing.draw_data?.matches && Array.isArray(existing.draw_data.matches) && existing.draw_data.matches.length > 0;
-                
+
                 // If we have new images or matches, update draw_data
                 if (hasNewImages) {
                     const existingImages = existing.draw_data?.images || [];
@@ -331,28 +331,28 @@ export const saveBracket = async (req, res) => {
                 }
                 // If no new images/matches, keep existing draw_data (already set above)
             }
-            
+
             // Only update pdf_url if it's explicitly provided
             if (pdfUrl !== undefined) {
                 updateData.pdf_url = finalPdfUrl;
             }
-            
-            const { data, error } = await supabaseAdmin.from("event_brackets").update(updateData).eq("id", existing.id).select().single();
+
+            const { data, error } = await supabaseAdmin.from("event_brackets").update(updateData).eq("id", existing.id).select().maybeSingle();
             if (error) throw error;
             result = data;
         } else {
             // Insert new bracket
-            const insertData = { 
-                event_id: eventId, 
-                category, 
-                round_name: roundName, 
-                draw_type: drawType || 'image', 
+            const insertData = {
+                event_id: eventId,
+                category,
+                round_name: roundName,
+                draw_type: drawType || 'image',
                 draw_data: finalDrawData || { images: [] }
             };
             if (pdfUrl !== undefined) {
                 insertData.pdf_url = finalPdfUrl;
             }
-            const { data, error } = await supabaseAdmin.from("event_brackets").insert(insertData).select().single();
+            const { data, error } = await supabaseAdmin.from("event_brackets").insert(insertData).select().maybeSingle();
             if (error) throw error;
             result = data;
         }
