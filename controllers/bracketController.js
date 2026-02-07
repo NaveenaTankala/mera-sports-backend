@@ -392,7 +392,24 @@ export const uploadCategoryMedia = async (req, res) => {
 export const updateBracketMatch = async (req, res) => {
     try {
         const { id: eventId, categoryId } = req.params;
-        const { categoryLabel, roundName, matchId, player1, player2, matchIndex, deleteMatch, updatePlayerRanks, playerRanks } = req.body;
+        const {
+            categoryLabel,
+            roundName,
+            matchId,
+            player1,
+            player2,
+            matchIndex,
+            deleteMatch,
+            updatePlayerRanks,
+            // Legacy flat rankings (pre per-round)
+            playerRanks,
+            enableRanking,
+            // New per-round ranking maps
+            playerRanksByRound,
+            player_ranks_by_round,
+            enableRankingByRound,
+            enable_ranking_by_round
+        } = req.body;
 
         if (!eventId || (!categoryId && !categoryLabel)) {
             return res.status(400).json({ message: "Event ID and Category required" });
@@ -422,12 +439,37 @@ export const updateBracketMatch = async (req, res) => {
         const bracketData = bracket.bracket_data || { rounds: [], players: [] };
 
         // Handle player ranks update
-        if (updatePlayerRanks === true && playerRanks !== undefined) {
-            bracketData.playerRanks = playerRanks;
-            
-            // Also store enableRanking toggle state if provided
-            if (req.body.enableRanking !== undefined) {
-                bracketData.enableRanking = req.body.enableRanking;
+        if (updatePlayerRanks === true) {
+            // --- Per-round ranking (new structure) ---
+            const incomingByRound =
+                playerRanksByRound ||
+                player_ranks_by_round ||
+                null;
+
+            if (incomingByRound && typeof incomingByRound === "object") {
+                // Overwrite per-round map with payload
+                bracketData.playerRanksByRound = incomingByRound;
+                bracketData.player_ranks_by_round = incomingByRound;
+            }
+
+            const incomingToggleByRound =
+                enableRankingByRound ||
+                enable_ranking_by_round ||
+                null;
+
+            if (incomingToggleByRound && typeof incomingToggleByRound === "object") {
+                bracketData.enableRankingByRound = incomingToggleByRound;
+                bracketData.enable_ranking_by_round = incomingToggleByRound;
+            }
+
+            // --- Legacy flat fields (backwards compatibility) ---
+            if (playerRanks !== undefined) {
+                bracketData.playerRanks = playerRanks;
+            }
+
+            if (enableRanking !== undefined) {
+                bracketData.enableRanking = enableRanking;
+                bracketData.enable_ranking = enableRanking;
             }
             
             const { data, error } = await supabaseAdmin
@@ -473,6 +515,73 @@ export const updateBracketMatch = async (req, res) => {
             if (foundMatchIndex === -1) {
                 return res.status(400).json({ message: "Match not found", code: "MATCH_NOT_FOUND" });
             }
+            
+            // Delete the match from matches table if it exists
+            // Match might be identified by matchId or by player combination + round
+            try {
+                const matchToDelete = round.matches[foundMatchIndex];
+                const matchIdToDelete = matchToDelete?.id || matchId;
+                
+                // Try to find and delete the match from matches table
+                // First, try by match ID if it's a UUID or stored reference
+                if (matchIdToDelete) {
+                    // Check if matchId looks like a UUID (from matches table)
+                    if (isUuid(matchIdToDelete)) {
+                        const { error: deleteMatchError } = await supabaseAdmin
+                            .from('matches')
+                            .delete()
+                            .eq('id', matchIdToDelete);
+                        
+                        if (deleteMatchError) {
+                            console.error("Error deleting match from matches table:", deleteMatchError);
+                        }
+                    } else {
+                        // Match ID is a bracket structure ID, try to find by round + players
+                        // Fetch matches for this round and category
+                        let matchQuery = supabaseAdmin
+                            .from('matches')
+                            .select('id, player_a, player_b, round_name')
+                            .eq('event_id', eventId)
+                            .eq('round_name', roundName);
+                        
+                        if (categoryId && isUuid(categoryId)) {
+                            matchQuery = matchQuery.eq('category_id', categoryId);
+                        } else if (categoryLabel) {
+                            // Try to match by categoryLabel if categoryId not available
+                            matchQuery = matchQuery.eq('category_id', categoryLabel);
+                        }
+                        
+                        const { data: matchesInRound, error: fetchMatchesError } = await matchQuery;
+                        
+                        if (!fetchMatchesError && matchesInRound && matchesInRound.length > 0) {
+                            // Try to match by player IDs
+                            const p1Id = matchToDelete?.player1?.id || matchToDelete?.player1;
+                            const p2Id = matchToDelete?.player2?.id || matchToDelete?.player2;
+                            
+                            const matchingMatch = matchesInRound.find(m => {
+                                const ma = m.player_a?.id || m.player_a;
+                                const mb = m.player_b?.id || m.player_b;
+                                return (ma === p1Id && mb === p2Id) || (ma === p2Id && mb === p1Id);
+                            });
+                            
+                            if (matchingMatch) {
+                                const { error: deleteMatchError } = await supabaseAdmin
+                                    .from('matches')
+                                    .delete()
+                                    .eq('id', matchingMatch.id);
+                                
+                                if (deleteMatchError) {
+                                    console.error("Error deleting match from matches table:", deleteMatchError);
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (matchDeleteErr) {
+                console.error("Error during match deletion:", matchDeleteErr);
+                // Continue with bracket match deletion even if matches table deletion fails
+            }
+            
             round.matches.splice(foundMatchIndex, 1);
             bracketData.rounds[roundIndex] = round;
 
@@ -834,9 +943,12 @@ export const addBracketRound = async (req, res) => {
             const nextMatchCount = Math.max(1, Math.ceil(prevMatches.length / 2));
             const nextName = getNextRoundName(nextMatchCount, currentRounds.length);
 
+            // If autoSeed is false, create a completely empty round (no matches yet).
+            // Admin will add matches manually from the UI. This avoids showing
+            // placeholder "TBD vs TBD" matches when the intent is a blank round.
             const nextRound = {
                 name: nextName,
-                matches: Array.from({ length: nextMatchCount }, () => makeEmptyMatch())
+                matches: autoSeed ? Array.from({ length: nextMatchCount }, () => makeEmptyMatch()) : []
             };
 
             if (autoSeed) {
@@ -1292,6 +1404,82 @@ export const deleteBracketRound = async (req, res) => {
         }
 
         const deletedRound = rounds[targetIndex];
+        const deletedRoundName = deletedRound?.name || roundName;
+        
+        // Delete all matches for this round from the matches table
+        // This ensures scoreboard data is completely removed when a round is deleted
+        // Admin can then regenerate matches from the bracket structure if needed
+        let deletedMatchCount = 0;
+        try {
+            // First, fetch ALL matches for this event to filter safely in memory
+            // This is more reliable than trying to match round_name exactly in the query
+            const { data: allEventMatches, error: fetchAllError } = await supabaseAdmin
+                .from('matches')
+                .select('id, category_id, event_id, round_name')
+                .eq('event_id', eventId);
+
+            if (fetchAllError) {
+                console.error("Error fetching all matches for deletion:", fetchAllError);
+            } else if (allEventMatches && allEventMatches.length > 0) {
+                // Filter matches in memory by category and round name (case-insensitive, trimmed)
+                const normalizedDeletedRoundName = String(deletedRoundName || '').trim();
+                
+                const safeMatchesToDelete = allEventMatches.filter(match => {
+                    const matchCategoryId = match.category_id;
+                    const matchRoundName = String(match.round_name || '').trim();
+                    
+                    // Round name must match (case-insensitive)
+                    const roundMatches = matchRoundName.toLowerCase() === normalizedDeletedRoundName.toLowerCase();
+                    if (!roundMatches) {
+                        return false;
+                    }
+                    
+                    // Category must match
+                    if (!matchCategoryId) {
+                        return false;
+                    }
+                    
+                    // Exact category match - try multiple strategies like deleteCategoryMatches does
+                    let categoryMatches = false;
+                    
+                    // Strategy 1: Exact UUID match (most reliable)
+                    if (categoryId && isUuid(categoryId)) {
+                        categoryMatches = String(matchCategoryId) === String(categoryId);
+                    }
+                    // Strategy 2: Exact text/numeric match (categoryId as text or number)
+                    else if (categoryId) {
+                        categoryMatches = matchCategoryId == categoryId || String(matchCategoryId) === String(categoryId);
+                    }
+                    // Strategy 3: Category name exact match (if category_id stores the full label)
+                    else if (categoryLabel) {
+                        categoryMatches = matchCategoryId === categoryLabel || String(matchCategoryId) === String(categoryLabel);
+                    }
+                    
+                    return categoryMatches;
+                });
+
+                // Delete matching matches
+                if (safeMatchesToDelete.length > 0) {
+                    const matchIds = safeMatchesToDelete.map(m => m.id);
+                    const { error: deleteMatchesError, data: deletedData } = await supabaseAdmin
+                        .from('matches')
+                        .delete()
+                        .in('id', matchIds)
+                        .select();
+
+                    if (deleteMatchesError) {
+                        console.error("Error deleting matches for round:", deleteMatchesError);
+                        // Don't fail the whole operation if match deletion fails, but log it
+                    } else {
+                        deletedMatchCount = deletedData?.length || safeMatchesToDelete.length;
+                    }
+                }
+            }
+        } catch (matchDeleteErr) {
+            console.error("Error during match deletion for round:", matchDeleteErr);
+            // Continue with round deletion even if match deletion fails
+        }
+
         rounds.splice(targetIndex, 1);
         bracketData.rounds = rounds;
 
@@ -1314,10 +1502,16 @@ export const deleteBracketRound = async (req, res) => {
 
         if (error) throw error;
 
+        // Return success with info about match deletion
+        const matchDeletionMessage = deletedMatchCount > 0 
+            ? `Round "${deletedRoundName}" deleted successfully. ${deletedMatchCount} match(es) removed from scoreboard.`
+            : `Round "${deletedRoundName}" deleted successfully. No matches found for this round.`;
+        
         return res.json({
             success: true,
             bracket: data,
-            message: "Round deleted successfully"
+            deletedMatchCount,
+            message: matchDeletionMessage
         });
     } catch (err) {
         console.error("DELETE ROUND ERROR:", err);
