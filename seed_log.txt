@@ -81,3 +81,47 @@
 [2026-02-04T04:54:27.729Z] ============================================================
 [2026-02-04T04:54:27.729Z] 
 ✅ Script completed successfully
+[2026-02-09T09:26:42.969Z] 🚀 Starting Singles (13 players) seeding script...
+[2026-02-09T09:26:43.543Z] No Super Admin found. Creating one...
+[2026-02-09T09:26:43.805Z] ✅ Using Super Admin: superadmin_1770629203544@merasports.com
+[2026-02-09T09:26:43.806Z] 
+👥 Ensuring at least 13 test players...
+[2026-02-09T09:26:43.941Z] ✅ Ready with 13 test players
+[2026-02-09T09:26:43.943Z] 
+📋 Creating event + Singles category...
+[2026-02-09T09:26:44.020Z] ✅ Event created: Test Singles Event (13 Players) (ID: 6)
+[2026-02-09T09:26:44.024Z]    Category: U-15 (Male) - Singles, id=00f2e882-2fb3-456f-b82c-adb3df4d6c65
+[2026-02-09T09:26:44.032Z] 
+📝 Registering 13 players into Singles category...
+[2026-02-09T09:26:44.971Z] ✅ Registered 13/13 players to Singles
+[2026-02-09T09:26:44.972Z] 
+🎉 DONE!
+[2026-02-09T09:26:44.973Z] Event ID: 6
+[2026-02-09T09:26:44.973Z] Use Draws → Initialize Bracket for category "U-15 (Male) - Singles" and auto-seed.
+[2026-02-12T17:52:14.078Z] 🚀 Starting Multi-Category Seeding Script...
+[2026-02-12T17:52:14.825Z] ✅ Using Super Admin: superadmin_1770629203544@merasports.com
+[2026-02-12T17:52:14.827Z] 
+👥 Ensuring at least 138 test players...
+[2026-02-12T17:52:40.008Z] ✅ Ready with 138 test players
+[2026-02-12T17:52:40.010Z] 
+📋 Creating Event...
+[2026-02-12T17:52:40.078Z] ✅ Event created: Multi-Category Test Event (ID: 7)
+[2026-02-12T17:52:40.081Z] 
+🔹 Processing Category: U-14 (14 Players) (14 players)
+[2026-02-12T17:52:40.211Z]    ✅ Category created: U-14 (14 Players)
+[2026-02-12T17:52:41.116Z]    ✅ Registered 14/14 players.
+[2026-02-12T17:52:41.117Z] 
+🔹 Processing Category: Opens (100 Players) (100 players)
+[2026-02-12T17:52:41.261Z]    ✅ Category created: Opens (100 Players)
+[2026-02-12T17:52:47.656Z]    ✅ Registered 100/100 players.
+[2026-02-12T17:52:47.663Z] 
+🔹 Processing Category: Top 4 (4 Players) (4 players)
+[2026-02-12T17:52:47.788Z]    ✅ Category created: Top 4 (4 Players)
+[2026-02-12T17:52:48.039Z]    ✅ Registered 4/4 players.
+[2026-02-12T17:52:48.040Z] 
+🔹 Processing Category: Elite 20 (20 Players) (20 players)
+[2026-02-12T17:52:48.163Z]    ✅ Category created: Elite 20 (20 Players)
+[2026-02-12T17:52:49.424Z]    ✅ Registered 20/20 players.
+[2026-02-12T17:52:49.432Z] 
+🎉 ALL DONE!
+[2026-02-12T17:52:49.436Z] Event ID: 7

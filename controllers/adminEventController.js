@@ -365,8 +365,56 @@ export const saveBracket = async (req, res) => {
 
 export const deleteBracket = async (req, res) => {
     try {
-        const { error } = await supabaseAdmin.from("event_brackets").delete().eq("id", req.params.id);
-        if (error) throw error;
-        res.json({ success: true, message: "Bracket deleted" });
-    } catch (err) { res.status(500).json({ message: "Failed to delete bracket" }); }
+        const bracketId = req.params.id;
+        if (!bracketId) {
+            return res.status(400).json({ success: false, message: "Bracket id is required" });
+        }
+
+        // Fetch bracket to know event/category for match cleanup
+        const { data: bracket, error: fetchError } = await supabaseAdmin
+            .from("event_brackets")
+            .select("id,event_id,category_id,category")
+            .eq("id", bracketId)
+            .maybeSingle();
+
+        if (fetchError) throw fetchError;
+        if (!bracket) {
+            return res.status(404).json({ success: false, message: "Bracket not found" });
+        }
+
+        const { event_id: eventId, category_id: categoryId, category } = bracket;
+
+        // Best-effort: delete all matches for this event+category from scoreboard
+        try {
+            let matchQuery = supabaseAdmin
+                .from("matches")
+                .delete()
+                .eq("event_id", eventId)
+                .select("id");
+
+            if (categoryId) {
+                matchQuery = matchQuery.eq("category_id", categoryId);
+            } else if (category) {
+                matchQuery = matchQuery.eq("category_id", category);
+            }
+
+            const { error: deleteMatchesError } = await matchQuery;
+            if (deleteMatchesError) {
+                console.error("Failed to delete matches when deleting bracket:", deleteMatchesError);
+            }
+        } catch (matchErr) {
+            console.error("Error while deleting matches for bracket:", matchErr);
+        }
+
+        const { error: deleteBracketError } = await supabaseAdmin
+            .from("event_brackets")
+            .delete()
+            .eq("id", bracketId);
+
+        if (deleteBracketError) throw deleteBracketError;
+        res.json({ success: true, message: "Bracket and related matches deleted" });
+    } catch (err) {
+        console.error("DELETE BRACKET ERROR:", err);
+        res.status(500).json({ success: false, message: "Failed to delete bracket" });
+    }
 };

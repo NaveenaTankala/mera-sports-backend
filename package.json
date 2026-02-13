@@ -9,7 +9,8 @@
     "seed:settings": "node scripts/seed_settings.js",
     "seed:event": "node scripts/seed_test_event.js",
     "seed:fresh": "node scripts/seed_fresh_test_event.js",
-    "check:db": "node scripts/check_db.js"
+    "check:db": "node scripts/check_db.js",
+    "seed:multi": "node scripts/seed_multi_category_event.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.87.3",

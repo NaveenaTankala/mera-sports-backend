@@ -7,7 +7,8 @@ import {
     generateMatchesFromBracket,
     generateLeagueMatches,
     getMatches,
-    updateMatchScore
+    updateMatchScore,
+    updateRoundSelectedSets
 } from "../controllers/matchController.js";
 
 const router = express.Router();
@@ -27,6 +28,10 @@ router.post("/", createMatch);
 // Finalize all matches in a round (calculate winners and set COMPLETED)
 // POST /api/admin/matches/:eventId/finalize
 router.post("/:eventId/finalize", finalizeRoundMatches);
+
+// Update selected sets (Best of N) for a bracket round
+// POST /api/admin/matches/round-sets
+router.post("/round-sets/update", updateRoundSelectedSets);
 
 // Delete all matches for a category (MUST come before parameterized routes)
 // DELETE /api/admin/matches/category/:eventId?categoryId=xxx&categoryName=xxx
