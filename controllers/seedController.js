@@ -111,62 +111,61 @@ export const seedTestEvent = async (req, res) => {
         // 5. Register Players (Men's Singles)
         const msCategory = categories.find(c => c.category === "Men's Singles");
         const singlePlayers = players.slice(0, 16);
-        let registeredCount = 0;
-        for (const p of singlePlayers) {
-            const { error: regError } = await supabaseAdmin.from("event_registrations").insert({
-                event_id: event.id,
-                player_id: p.id,
-                categories: [msCategory],
-                status: "verified",
-                amount_paid: msCategory.fee,
-                registration_no: `REG-MS-${p.id.slice(0, 4)}`
-            });
-            if (regError) {
-                log(`⚠️ Failed to register player ${p.name}: ${regError.message}`);
-            } else {
-                registeredCount++;
-            }
+        
+        const msRegistrations = singlePlayers.map(p => ({
+            event_id: event.id,
+            player_id: p.id,
+            categories: [msCategory],
+            status: "verified",
+            amount_paid: msCategory.fee,
+            registration_no: `REG-MS-${p.id.slice(0, 4)}`
+        }));
+        const { error: msRegError, count: registeredCount } = await supabaseAdmin.from("event_registrations").insert(msRegistrations).select('*', { count: 'exact' });
+        if (msRegError) {
+            log(`⚠️ Failed to register players: ${msRegError.message}`);
         }
-        log(`✅ Registered ${registeredCount}/${singlePlayers.length} players for Men's Singles`);
+        log(`✅ Registered ${registeredCount || msRegistrations.length}/${singlePlayers.length} players for Men's Singles`);
 
         // 6. Register Teams (Men's Doubles)
         const mdCategory = categories.find(c => c.category === "Men's Doubles");
         const doublePlayers = players.slice(16, 32);
-        let teamsRegistered = 0;
+        const teamsToCreate = [];
         for (let i = 0; i < doublePlayers.length; i += 2) {
             const p1 = doublePlayers[i];
             const p2 = doublePlayers[i + 1];
-            if (!p1 || !p2) break;
-
-            const { data: team, error: teamError } = await supabaseAdmin.from("player_teams").insert({
-                team_name: `${p1.name} & ${p2.name} Duo`,
-                sport: "Badminton",
-                captain_id: p1.id,
-                captain_name: p1.name,
-                members: [{ id: p2.id, name: p2.name, mobile: "9999999999" }],
-                status: "active"
-            }).select().single();
-
-            if (teamError) {
-                log(`⚠️ Failed to create team for ${p1.name} & ${p2.name}: ${teamError.message}`);
-                continue;
-            }
-
-            if (team) {
-                const { error: regError } = await supabaseAdmin.from("event_registrations").insert({
-                    event_id: event.id,
-                    player_id: p1.id,
-                    team_id: team.id,
-                    categories: [mdCategory],
-                    status: "verified",
-                    amount_paid: mdCategory.fee,
-                    registration_no: `REG-MD-${team.id.slice(0, 4)}`
+            if (p1 && p2) {
+                teamsToCreate.push({
+                    team_name: `${p1.name} & ${p2.name} Duo`,
+                    sport: "Badminton",
+                    captain_id: p1.id,
+                    captain_name: p1.name,
+                    members: [{ id: p2.id, name: p2.name, mobile: "9999999999" }],
+                    status: "active"
                 });
-                if (regError) {
-                    log(`⚠️ Failed to register team ${team.id}: ${regError.message}`);
-                } else {
-                    teamsRegistered++;
-                }
+            }
+        }
+
+        const { data: createdTeams, error: teamsError } = await supabaseAdmin.from("player_teams").insert(teamsToCreate).select();
+        if (teamsError) {
+            log(`⚠️ Failed to create teams: ${teamsError.message}`);
+        }
+
+        let teamsRegistered = 0;
+        if (createdTeams && createdTeams.length > 0) {
+            const mdRegistrations = createdTeams.map(team => ({
+                event_id: event.id,
+                player_id: team.captain_id,
+                team_id: team.id,
+                categories: [mdCategory],
+                status: "verified",
+                amount_paid: mdCategory.fee,
+                registration_no: `REG-MD-${team.id.slice(0, 4)}`
+            }));
+            const { error: mdRegError, count } = await supabaseAdmin.from("event_registrations").insert(mdRegistrations).select('*', { count: 'exact' });
+            if (mdRegError) {
+                log(`⚠️ Failed to register teams: ${mdRegError.message}`);
+            } else {
+                teamsRegistered = count || mdRegistrations.length;
             }
         }
         log(`✅ Registered ${teamsRegistered} teams for Men's Doubles`);
