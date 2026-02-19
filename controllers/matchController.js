@@ -81,8 +81,10 @@ export const generateMatchesFromBracket = async (req, res) => {
         let skippedCount = 0;
 
         // 2. Loop through rounds and matches
-        // HARDENED: Insert a DB row for EVERY bracket match (including BYE) so match_index stays
-        // contiguous and bracket_match_id is the ONLY lookup key. BYE rows get status='BYE'.
+        // HARDENED: Bulk insert DB rows for matches to ensure performance and atomicity.
+        // match_index stays contiguous and bracket_match_id is the lookup key.
+        const bulkPayload = [];
+
         for (const round of roundsToProcess) {
             const matches = round.matches || [];
 
@@ -116,23 +118,25 @@ export const generateMatchesFromBracket = async (req, res) => {
                     bracket_match_id: bracketMatchId,
                     score: null,
                     winner: null,
-                    status: isBye || isEmpty ? 'BYE' : 'SCHEDULED'
+                    status: isBye ? 'BYE' : 'SCHEDULED'
                 };
 
-                const { error: insertError } = await supabaseAdmin
-                    .from('matches')
-                    .insert(payload)
-                    .select()
-                    .maybeSingle();
-
-                if (insertError) {
-                    if (insertError.code === '23505') {
-                        skippedCount++;
-                    }
-                } else {
-                    createdCount++;
-                }
+                bulkPayload.push(payload);
             }
+        }
+
+        if (bulkPayload.length > 0) {
+            const { data, error } = await supabaseAdmin
+                .from('matches')
+                .upsert(bulkPayload, {
+                    onConflict: 'bracket_id,bracket_match_id',
+                    ignoreDuplicates: true
+                })
+                .select();
+
+            if (error) throw error;
+
+            createdCount = data?.length || 0;
         }
 
         // If setsPerMatch is provided, update the round's setsConfig in bracket_data
@@ -611,10 +615,6 @@ export const generateLeagueMatches = async (req, res) => {
                     if (existingPairs.has(key)) {
                         continue; // Already have this pairing in this group
                     }
-
-                    // Use category_id from league config (ensures consistency)
-                    // category_id can be string like "1767354643599" or UUID
-                    const matchCategoryId = leagueCategoryId || (categoryId ? String(categoryId) : null);
 
                     toInsert.push({
                         event_id: eventId,
@@ -1679,6 +1679,7 @@ export const finalizeRoundMatches = async (req, res) => {
                     });
                 });
 
+                const downstreamUpdates = new Map();
                 for (const update of updates) {
                     if (!update.winner) continue;
                     const existingMatch = existingMatches.find(m => m.id === update.id);
@@ -1780,6 +1781,32 @@ export const finalizeRoundMatches = async (req, res) => {
 
                     // Assign winner to the correct slot; this supports partial completion
                     downstreamMatch[targetSlot] = winnerPlayer;
+
+                    // Collect downstream match update for bulk execution
+                    const dbTargetSlot = (targetSlot === 'player1') ? 'player_a' : 'player_b';
+                    const targetKey = String(targetId);
+                    
+                    if (!downstreamUpdates.has(targetKey)) {
+                        downstreamUpdates.set(targetKey, {
+                            bracket_id: bracket.id,
+                            bracket_match_id: targetKey,
+                            updated_at: new Date().toISOString()
+                        });
+                    }
+                    downstreamUpdates.get(targetKey)[dbTargetSlot] = winnerPlayer;
+                }
+
+                // Perform bulk update for downstream matches
+                if (downstreamUpdates.size > 0) {
+                    try {
+                        await supabaseAdmin
+                            .from('matches')
+                            .upsert(Array.from(downstreamUpdates.values()), { 
+                                onConflict: 'bracket_id,bracket_match_id' 
+                            });
+                    } catch (dbUpdateErr) {
+                        console.error("Failed to bulk update downstream matches in DB:", dbUpdateErr);
+                    }
                 }
 
                 } // end integrity.valid

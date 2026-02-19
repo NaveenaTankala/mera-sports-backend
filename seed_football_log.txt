@@ -1,0 +1,55 @@
+[2026-02-16T10:30:11.572Z] ⚽ Starting Football Event Seeding Script...
+
+[2026-02-16T10:30:12.724Z] 📡 Connecting to: https://mkeytghrgjbnxnhbxdkw.supabase.co
+[2026-02-16T10:30:13.366Z] No Super Admin found. Creating one...
+[2026-02-16T10:30:13.635Z] ✅ Using Super Admin: superadmin_1771237813367@merasports.com
+[2026-02-16T10:30:13.637Z] 
+👥 Ensuring at least 110 test players exist...
+[2026-02-16T10:30:13.819Z] ✅ Ready with 110 test players
+[2026-02-16T10:30:13.820Z] 
+🧹 STEP 3: Cleaning up old football test events...
+[2026-02-16T10:30:13.895Z] ✅ No old football events to clean up
+[2026-02-16T10:30:15.292Z] 
+📋 STEP 4: Defining football category...
+[2026-02-16T10:30:15.295Z] ✅ Category: Open (Male) - Team (Team size: 11)
+[2026-02-16T10:30:15.296Z] 
+⚽ STEP 5: Creating football event...
+[2026-02-16T10:30:15.400Z] ✅ Event Created: Mera Sports Football Cup 2026 (ID: 8)
+[2026-02-16T10:30:15.401Z] 
+🏟️ STEP 6: Creating 10 football teams and registering...
+[2026-02-16T10:30:15.488Z]    ✅ Team created: Hyderabad FC (Captain: Player 1, 10 members)
+[2026-02-16T10:30:15.650Z]    ✅ Team created: Mumbai Strikers (Captain: Player 109, 10 members)
+[2026-02-16T10:30:15.789Z]    ✅ Team created: Delhi Dynamos (Captain: Player 119, 10 members)
+[2026-02-16T10:30:15.938Z]    ✅ Team created: Chennai Warriors (Captain: Player 129, 10 members)
+[2026-02-16T10:30:16.285Z]    ✅ Team created: Kolkata Knights (Captain: Player 14, 10 members)
+[2026-02-16T10:30:16.427Z]    ✅ Team created: Bangalore United (Captain: Player 24, 10 members)
+[2026-02-16T10:30:16.560Z]    ✅ Team created: Pune City FC (Captain: Player 34, 10 members)
+[2026-02-16T10:30:16.691Z]    ✅ Team created: Jaipur Royals FC (Captain: Player 44, 10 members)
+[2026-02-16T10:30:16.823Z]    ✅ Team created: Goa Gladiators (Captain: Player 54, 10 members)
+[2026-02-16T10:30:16.949Z]    ✅ Team created: Lucknow Lions FC (Captain: Player 64, 10 members)
+[2026-02-16T10:30:17.006Z] 
+============================================================
+[2026-02-16T10:30:17.007Z] 🎉 FOOTBALL EVENT SEEDING COMPLETE!
+[2026-02-16T10:30:17.007Z] ============================================================
+[2026-02-16T10:30:17.008Z] ⚽ Event Name:      Mera Sports Football Cup 2026
+[2026-02-16T10:30:17.009Z] 🆔 Event ID:        8
+[2026-02-16T10:30:17.009Z] 🏷️ Sport:            football
+[2026-02-16T10:30:17.009Z] 📋 Category:         Open (Male) - Team (ID: 172c8723-b9a6-4a29-9413-efa81458f256)
+[2026-02-16T10:30:17.010Z] 🏟️ Teams Created:    10/10
+[2026-02-16T10:30:17.011Z] 📝 Registrations:    10/10
+[2026-02-16T10:30:17.011Z] 👥 Players Used:     110/110
+[2026-02-16T10:30:17.011Z] 
+[2026-02-16T10:30:17.012Z] Teams:
+[2026-02-16T10:30:17.013Z]    🏳️ Hyderabad FC (ID: d14ceb63-0dd9-4e3c-a671-2512865fdb6a)
+[2026-02-16T10:30:17.015Z]    🏳️ Mumbai Strikers (ID: da803b8a-6b26-45c6-b370-7c4aba61d247)
+[2026-02-16T10:30:17.016Z]    🏳️ Delhi Dynamos (ID: abd0b669-f2dc-4b9f-9dfc-5c7cfaa3a0cd)
+[2026-02-16T10:30:17.016Z]    🏳️ Chennai Warriors (ID: 47f0236f-538d-4e84-a593-00d55d491ba1)
+[2026-02-16T10:30:17.017Z]    🏳️ Kolkata Knights (ID: d8c5e4e6-99e9-4dd4-b8a0-11c7166807f9)
+[2026-02-16T10:30:17.018Z]    🏳️ Bangalore United (ID: 3a452530-0b76-42b2-8e65-3dcfe64dd419)
+[2026-02-16T10:30:17.019Z]    🏳️ Pune City FC (ID: 7fc20301-b07f-402a-b459-7713a238354f)
+[2026-02-16T10:30:17.020Z]    🏳️ Jaipur Royals FC (ID: 1639568a-3f38-4e62-8360-a8902a047f2f)
+[2026-02-16T10:30:17.021Z]    🏳️ Goa Gladiators (ID: c8e09495-cf01-490d-9ebd-9976a46499da)
+[2026-02-16T10:30:17.021Z]    🏳️ Lucknow Lions FC (ID: b2c12aa1-0ddd-4fe3-a9ea-560ac78503b6)
+[2026-02-16T10:30:17.022Z] 
+[2026-02-16T10:30:17.022Z] 📌 Use this event in the admin panel to test bracket/draw features!
+[2026-02-16T10:30:17.023Z] ============================================================
