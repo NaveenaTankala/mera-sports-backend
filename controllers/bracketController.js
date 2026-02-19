@@ -70,11 +70,27 @@ const isStructuredKnockout = (bracketData) => {
     return !!(firstMatch && (firstMatch.winnerTo != null || firstMatch.feederMatch1 != null));
 };
 
-const inferRoundLabelFromMatchCount = (matchCount, fallbackIndex) => {
-    if (matchCount === 1) return "Final";
-    if (matchCount === 2) return "Semifinal";
-    if (matchCount === 4) return "Quarterfinal";
-    return `Round ${fallbackIndex + 1}`;
+const inferRoundLabelFromMatchCount = (matchCount, fallbackIndex, roundIndex, totalRounds) => {
+    // Calculate number of competitors in this round (each match = 2 competitors)
+    const numCompetitors = matchCount * 2;
+    const roundsRemaining = totalRounds - roundIndex;  // Including current round
+    
+    // CRITICAL: Reserve standard tournament names ONLY for final rounds
+    // This ensures unique names and prevents confusing misnaming of early rounds
+    
+    // Last round (1 remaining) = Final
+    if (roundsRemaining === 1) return "Final";
+    
+    // Second-to-last (2 remaining) = Semifinal
+    if (roundsRemaining === 2) return "Semifinal";
+    
+    // Third-to-last (4 remaining) = Quarterfinal
+    if (roundsRemaining === 3) return "Quarterfinal";
+    
+    // For all other rounds, use "Round of X" format
+    // This applies to: all earlier rounds (Round of 64, Round of 32, Round of 16, etc.)
+    // Examples: "Round of 64", "Round of 32", "Round of 16"
+    return `Round of ${numCompetitors}`;
 };
 
 // Helper to create empty match structure for bracket visualization
@@ -278,13 +294,14 @@ export const getCategoryDraw = async (req, res) => {
 
         if (error) throw error;
 
-
         // Group by mode - prioritize BRACKET over MEDIA if both exist
         const mediaDraw = data.find(b => b.mode === 'MEDIA');
         const bracketDraw = data.find(b => b.mode === 'BRACKET');
 
         // Determine mode: BRACKET takes priority if it exists
-        const mode = bracketDraw ? 'BRACKET' : (mediaDraw ? 'MEDIA' : null);
+        // Only return MEDIA mode if the mediaDraw actually has media files (media_urls or pdf_url)
+        const hasActualMedia = mediaDraw && ((mediaDraw.media_urls && mediaDraw.media_urls.length > 0) || mediaDraw.pdf_url);
+        const mode = bracketDraw ? 'BRACKET' : (hasActualMedia ? 'MEDIA' : null);
 
         res.json({
             success: true,
@@ -292,7 +309,7 @@ export const getCategoryDraw = async (req, res) => {
                 categoryId: categoryId || null,
                 categoryLabel: categoryLabel || data[0]?.category,
                 mode: mode,
-                media: mediaDraw ? {
+                media: mediaDraw && hasActualMedia ? {
                     id: mediaDraw.id,
                     urls: mediaDraw.media_urls || [],
                     pdfUrl: mediaDraw.pdf_url,
@@ -364,7 +381,7 @@ export const validateBracketDraw = async (req, res) => {
 export const initBracket = async (req, res) => {
     try {
         const { id: eventId, categoryId } = req.params;
-        const { categoryLabel, roundStructure } = req.body;
+        const { categoryLabel, roundStructure, bracketData: incomingBracketData, players: incomingPlayers, createdFrom } = req.body;
 
         if (!eventId || (!categoryId && !categoryLabel)) {
             return res.status(400).json({ message: "Event ID and Category required" });
@@ -408,9 +425,12 @@ export const initBracket = async (req, res) => {
         const defaultRounds =
             roundStructure && Array.isArray(roundStructure) ? roundStructure : [];
 
+        // POOL BRACKET FIX: Preserve player list and metadata from frontend
         const bracketData = {
             rounds: [],
-            players: []
+            players: (incomingPlayers && Array.isArray(incomingPlayers)) ? incomingPlayers : (incomingBracketData?.players || []),
+            ...(incomingBracketData && typeof incomingBracketData === "object" ? incomingBracketData : {}),
+            ...(createdFrom ? { createdFrom } : {})
         };
 
         const insertData = {
@@ -463,7 +483,7 @@ export const initBracket = async (req, res) => {
 export const createFullBracketStructure = async (req, res) => {
     try {
         const { id: eventId, categoryId } = req.params;
-        const { categoryLabel, seedingMode = "AUTO", rounds: roundConfigs } = req.body || {};
+        const { categoryLabel, seedingMode = "AUTO", rounds: roundConfigs, playerIds } = req.body || {};
 
         if (!eventId || (!categoryId && !categoryLabel)) {
             return res.status(400).json({ message: "Event ID and Category required" });
@@ -496,37 +516,161 @@ export const createFullBracketStructure = async (req, res) => {
             });
         }
 
-        // Fetch verified registrations for this event + category (to know player pool size)
-        let registrationsQuery = supabaseAdmin
-            .from("event_registrations")
-            .select(`
-                id,
-                player_id,
-                team_id,
-                categories,
-                users:player_id (
-                    id,
-                    first_name,
-                    last_name,
-                    player_id,
-                    name
-                ),
-                player_teams (
-                    id,
-                    team_name,
-                    captain_name,
-                    members
-                )
-            `)
-            .eq("event_id", eventId)
-            .eq("status", "verified");
+        // SAFEGUARD: Check if matches already exist for this bracket to prevent duplicates
+        // Query the matches table directly to see actual state
+        const { data: existingMatches, error: matchCheckError } = await supabaseAdmin
+            .from("matches")
+            .select("id, round_name")
+            .eq("bracket_id", bracket.id)
+            .limit(1);
+        
+        if (matchCheckError && matchCheckError.code !== 'PGRST116') {
+            console.warn("Warning checking existing matches:", matchCheckError);
+        }
+        
+        if (existingMatches && existingMatches.length > 0) {
+            return res.status(400).json({
+                message: "This bracket already has rounds created. Please delete the bracket and create a new one to change the structure.",
+                code: "ROUNDS_EXIST"
+            });
+        }
 
-        const { data: registrations, error: regError } = await registrationsQuery;
-        if (regError) throw regError;
+        // POOL BRACKET FIX: If playerIds are provided (pool brackets), use ONLY those players
+        // Otherwise fetch verified registrations for this event + category (to know player pool size)
+        let registrations = [];
+        
+        if (playerIds && Array.isArray(playerIds) && playerIds.length > 0) {
+            // Pool bracket: use only the specified playerIds
+            let registrationsQuery = supabaseAdmin
+                .from("event_registrations")
+                .select(`
+                    id,
+                    player_id,
+                    team_id,
+                    categories,
+                    users:player_id (
+                        id,
+                        first_name,
+                        last_name,
+                        player_id,
+                        name
+                    ),
+                    player_teams (
+                        id,
+                        team_name,
+                        captain_name,
+                        members
+                    )
+                `)
+                .eq("event_id", eventId)
+                .eq("status", "verified");
+
+            const { data: allRegs, error: regError } = await registrationsQuery;
+            if (regError) throw regError;
+
+            // Filter to ONLY the specified playerIds
+            // playerIds from frontend are pool team/player codes like 'REG-FB-GoaGla-c8e0'
+            // These don't match registration UUIDs, so we need a fallback strategy
+            // First try: Exact match on IDs
+            let matchedRegs = (allRegs || []).filter(reg => {
+                const registrationId = String(reg.id || '');
+                const userId = String((Array.isArray(reg.users) ? reg.users[0]?.id : reg.users?.id) || reg.player_id || '');
+                const teamId = String(reg.team_id || '');
+                const playerIdStrings = playerIds.map(pid => String(pid || ''));
+                
+                return playerIdStrings.some(pid => 
+                    pid === registrationId || 
+                    pid === userId || 
+                    pid === teamId
+                );
+            });
+            
+            // Fallback: If IDs don't match, try matching by team name fragments
+            // This handles cases where frontend sends pool team codes instead of registration UUIDs
+            if (matchedRegs.length === 0 && playerIds.length > 0) {
+                matchedRegs = (allRegs || []).filter(reg => {
+                    const teamName = (Array.isArray(reg.player_teams) ? reg.player_teams[0]?.team_name : reg.player_teams?.team_name) || '';
+                    
+                    return playerIds.some(pid => {
+                        const pidStr = String(pid || '').toLowerCase();
+                        // Extract team name indicators from pool codes like 'REG-FB-GoaGla-c8e0'
+                        const parts = pidStr.split('-');
+                        const indicator = parts.slice(2, -1).join('-').toLowerCase(); // 'GoaGla' from 'REG-FB-GoaGla-c8e0'
+                        
+                        // Extract individual words from team name
+                        const teamWords = teamName.toLowerCase().split(/\s+/);
+                        
+                        // Check various matching strategies
+                        // 1. Exact word match: 'Mumbai' matches 'Mumbai Strikers'
+                        if (teamWords.some(w => w === indicator)) {
+                            return true;
+                        }
+                        
+                        // 2. Prefix match: 'Bangal' matches any word starting with 'Bangal'
+                        if (teamWords.some(w => w.startsWith(indicator))) {
+                            return true;
+                        }
+                        
+                        // 3. Reverse - indicator contains team word: 'GoaGla' matches 'Goa' (first 3 chars)
+                        if (teamWords.some(w => indicator.startsWith(w.substring(0, 3)))) {
+                            return true;
+                        }
+                        
+                        // 4. Combined abbreviation: join first N chars of each word
+                        // 'GoaGla' should match 'Goa Gladiators'
+                        const abbrev = teamWords.map(w => w.substring(0, 3)).join('').substring(0, 6);
+                        if (abbrev.startsWith(indicator.substring(0, 4))) {
+                            return true;
+                        }
+                        
+                        return false;
+                    });
+                });
+                
+            }
+            
+            registrations = matchedRegs;
+        } else {
+            // Normal bracket: fetch all verified registrations for this event + category
+            let registrationsQuery = supabaseAdmin
+                .from("event_registrations")
+                .select(`
+                    id,
+                    player_id,
+                    team_id,
+                    categories,
+                    users:player_id (
+                        id,
+                        first_name,
+                        last_name,
+                        player_id,
+                        name
+                    ),
+                    player_teams (
+                        id,
+                        team_name,
+                        captain_name,
+                        members
+                    )
+                `)
+                .eq("event_id", eventId)
+                .eq("status", "verified");
+
+            const { data: regData, error: regError } = await registrationsQuery;
+            if (regError) throw regError;
+            registrations = regData || [];
+        }
 
         // Filter registrations matching this category (reuse existing robust matching logic)
+        // For pool brackets, we already filtered by playerIds, so skip category filtering
         const registrationsForCategory = (() => {
             if (!registrations || registrations.length === 0) return [];
+            
+            // If specific playerIds were provided (pool bracket), don't filter by category again
+            if (playerIds && Array.isArray(playerIds) && playerIds.length > 0) {
+                return registrations; // Already filtered to these playerIds
+            }
+            
             const label = categoryLabel || bracket.category || "";
             const parts = label.split(" - ");
             const drawCatName = parts[0] || "";
@@ -609,6 +753,9 @@ export const createFullBracketStructure = async (req, res) => {
             }
         }
 
+        console.log(`[START ROUNDS] Extracted ${players.length} unique players from ${registrationsForCategory.length} registrations:`, 
+            players.map(p => `${p.name}(${p.type})`).slice(0, 5));
+        
         const playerCount = players.length;
         if (playerCount < 2) {
             return res.status(400).json({
@@ -617,22 +764,31 @@ export const createFullBracketStructure = async (req, res) => {
             });
         }
 
+        console.log(`[START ROUNDS] *** DIAGNOSTIC: playerIds=${playerIds?.length || 0}, registrations=${registrations.length}, registrationsForCategory=${registrationsForCategory.length}, extracted players=${playerCount}`);
+        
         const bracketSize = nextPowerOfTwo(playerCount); // e.g. 13 -> 16
         const roundCount = Math.max(1, Math.log2(bracketSize));
+
+        console.log(`[START ROUNDS] bracketSize=${bracketSize}, roundCount=${roundCount}, playerCount=${playerCount}, bracketId=${bracket.id}`);
+        console.log(`[START ROUNDS] Bracket existing rounds in bracket_data:`, bracket.bracket_data?.rounds?.length || 0, 
+            bracket.bracket_data?.rounds?.map(r => `${r.name}(${r.matches?.length || 0})`) || 'none');
 
         // Use provided round configs if present, otherwise infer simple names
         const effectiveRoundConfigs = [];
         for (let i = 0; i < roundCount; i++) {
             const cfg = (Array.isArray(roundConfigs) && roundConfigs[i]) || {};
             const matchCount = bracketSize / Math.pow(2, i + 1);
-            const fallbackName = inferRoundLabelFromMatchCount(matchCount, i);
+            const fallbackName = inferRoundLabelFromMatchCount(matchCount, i, i, roundCount);
             effectiveRoundConfigs.push({
-                name: (cfg.name && String(cfg.name).trim()) || fallbackName,
+                // CRITICAL: Always use calculated fallbackName (not cfg.name) to ensure uniqueness
+                // The frontend may send duplicate names like "Semifinal" for different rounds
+                // This causes unique constraint violations in the database
+                name: fallbackName,
                 minSets: cfg.minSets || 1,
                 maxSets: cfg.maxSets || 7
             });
         }
-
+        
         // Build rounds + fully linked matches
         const bracketData = bracket.bracket_data || { rounds: [], players: [] };
         const newRounds = [];
@@ -640,6 +796,7 @@ export const createFullBracketStructure = async (req, res) => {
         for (let r = 0; r < roundCount; r++) {
             const cfg = effectiveRoundConfigs[r];
             const matchCount = bracketSize / Math.pow(2, r + 1);
+            console.log(`[START ROUNDS]   Round ${r + 1} (${cfg.name}): ${matchCount} matches`);
             const round = {
                 name: cfg.name,
                 matches: [],
@@ -649,7 +806,7 @@ export const createFullBracketStructure = async (req, res) => {
                 },
                 seedingMode: r === 0 ? (seedingMode === "MANUAL" ? "MANUAL" : "AUTO") : "AUTO"
             };
-
+            
             for (let m = 1; m <= matchCount; m++) {
                 const matchId = `R${r + 1}-M${m}`;
                 const match = makeEmptyMatch(matchId);
@@ -686,7 +843,6 @@ export const createFullBracketStructure = async (req, res) => {
 
             newRounds.push(round);
         }
-
         // Seed players into first round (AUTO) or leave empty (MANUAL)
         // CRITICAL: Only Round 1 placement + BYE assignment is handled here.
         // All feeder mapping / later rounds remain untouched.
@@ -764,36 +920,6 @@ export const createFullBracketStructure = async (req, res) => {
             // BYE count (Round 1 only). byes = drawSize - actualPlayers
             const byesTotal = Math.max(0, bracketSize - playerCount);
 
-            // === HARD DIAGNOSTIC TRACE FOR RANK / BYE BEHAVIOUR ===
-            console.log("==== RAW RANK MAP FROM DB ====");
-            console.log("playerRanks:", (bracketData.playerRanks || bracketData.player_ranks || null));
-            console.log("playerRanksByRound['Round 1']:",
-                (bracketData.playerRanksByRound && bracketData.playerRanksByRound["Round 1"]) ||
-                (bracketData.player_ranks_by_round && bracketData.player_ranks_by_round["Round 1"]) ||
-                null
-            );
-
-            console.log("==== PLAYER → SEED RESOLUTION ====");
-            players.forEach((p) => {
-                console.log({
-                    playerId: p.id,
-                    name: p.name,
-                    resolvedSeed: getSeed(p.id)
-                });
-            });
-
-            console.log("==== SEEDED SORTED ORDER ====");
-            console.log(seededSorted.map(p => ({
-                playerId: p.id,
-                seed: p.seed
-            })));
-
-            console.log("[Bracket][Round1 BYE] BYEs total:", byesTotal);
-            console.log("[Bracket][Round1 BYE] Ranked detected:", seededSorted.map(p => ({
-                id: p.id,
-                rank: p.seed
-            })));
-
             // STEP 5 — HARD ASSERT (CATCH DATA BUG EARLY)
             if (byesTotal > 0) {
                 const expectedTopSeeds = seededSorted.slice(0, byesTotal).map(p => p.seed);
@@ -809,9 +935,6 @@ export const createFullBracketStructure = async (req, res) => {
             // If no BYEs, place ranked players in certified positions, then fill unranked.
             const certifiedSeeding = generateCertifiedSeedingOrder(bracketSize);
             const shuffledUnseeded = shuffle(unseeded);
-
-            console.log("[Bracket][Round1] Certified Seeding Order:", certifiedSeeding);
-            console.log("[Bracket][Round1] BYE Logic:", { playerCount, bracketSize, byesTotal });
 
             if (byesTotal <= 0) {
                 // STEP A: Place ranked players into their certified slots
@@ -851,11 +974,6 @@ export const createFullBracketStructure = async (req, res) => {
                         : seedSlotIndex - 1;
                     reservedByeSlots.add(opponentSlotIndex);
                 }
-
-                console.log("[Bracket][Round1 BYE] Reserved BYE slot indices:", Array.from(reservedByeSlots));
-                console.log("[Bracket][Round1 BYE] Ranked assigned BYEs:",
-                    seededSorted.filter(p => p.seed <= byesTotal).map(p => ({ id: p.id, rank: p.seed }))
-                );
 
                 // STEP B: Place ALL ranked players into certified slots
                 for (const p of seededSorted) {
@@ -898,9 +1016,33 @@ export const createFullBracketStructure = async (req, res) => {
             }
         }
 
-        // Persist bracket_data (replace rounds; keep any existing players metadata)
-        bracketData.rounds = newRounds;
+        // FIRST: Delete all existing matches for this bracket BEFORE updating bracket_data
+        // This prevents constraint violations when inserting new matches
+        const { error: deleteError, count: deleteCount } = await supabaseAdmin
+            .from("matches")
+            .delete()
+            .eq("bracket_id", bracket.id);
+        
+        console.log(`[START ROUNDS] Deleted ${deleteCount || 0} existing matches for bracket ${bracket.id}`);
+        
+        if (deleteError && deleteError.code !== 'PGRST116') {  // PGRST116 = no rows deleted (ok)
+            console.warn("Warning: Failed to clean up existing matches:", deleteError);
+            // Continue anyway - we'll handle constraint errors during insert
+        }
 
+        // SECOND: Prepare bracket_data with new rounds (keep any existing players metadata)
+        bracketData.rounds = newRounds;
+        // IMPORTANT: Preserve players array (populated by initBracket from frontend)
+        // Don't overwrite it - just keep it as-is
+        if (!bracketData.players || !Array.isArray(bracketData.players)) {
+            bracketData.players = players.map(p => ({
+                id: p.id,
+                name: p.name,
+                type: p.type
+            }));
+        }
+        
+        // THIRD: Update bracket record with new rounds structure
         const { data: updatedBracket, error: updateError } = await supabaseAdmin
             .from("event_brackets")
             .update({
@@ -919,11 +1061,13 @@ export const createFullBracketStructure = async (req, res) => {
             .maybeSingle();
 
         if (updateError) throw updateError;
-
+        
         // Generate matches table entries for ALL rounds (Option B)
         // CRITICAL: Do NOT create DB match rows for Round 1 BYE matches (single player).
         const allInserts = [];
+        console.log(`[START ROUNDS] Building allInserts from ${newRounds.length} rounds:`);
         for (const [rIndex, round] of newRounds.entries()) {
+            console.log(`[START ROUNDS]   Round ${rIndex} (${round.name}): Processing ${round.matches?.length || 0} matches`);
             for (const match of round.matches) {
                 const matchIndex = match.matchNumber - 1;
                 const hasValidPlayer = (p) => p && typeof p === "object" && Object.keys(p).length > 0 && (p.id || p.player_id);
@@ -949,21 +1093,40 @@ export const createFullBracketStructure = async (req, res) => {
         }
 
         if (allInserts.length > 0) {
-            // Best-effort insert; if unique constraints or duplicates exist, we ignore per-row errors.
+            // FOURTH: Insert matches into database (all old matches deleted above)
+            console.log(`[START ROUNDS] Inserting ${allInserts.length} matches into database`);
+            console.log(`[START ROUNDS]   Match breakdown by round:`, allInserts.reduce((acc, m) => {
+                acc[m.round_name] = (acc[m.round_name] || 0) + 1;
+                return acc;
+            }, {}));
+
             const { error: insertError } = await supabaseAdmin
                 .from("matches")
                 .insert(allInserts);
 
             if (insertError) {
-                // We don't fail Start Rounds if some matches already exist; log and continue.
-                console.error("START ROUNDS - matches insert warning:", insertError);
+                console.error("START ROUNDS - CRITICAL: Match insertion failed after delete:", insertError);
+                
+                // If we get a duplicate key error here, it means something re-created the matches after we deleted them
+                if (insertError.code === '23505') {  // Unique constraint violation
+                    throw new Error("DUPLICATE_MATCH_ERROR: Matches were recreated after deletion. Possible race condition or pool bracket interference.");
+                }
+                
+                // Re-throw other database errors
+                throw insertError;
             }
         }
 
         return res.json({
             success: true,
             bracket: updatedBracket,
-            message: "Full bracket structure created successfully"
+            message: "Full bracket structure created successfully",
+            debug: {
+                bracketSize,
+                playerCount,
+                roundCount,
+                totalMatches: allInserts.length
+            }
         });
     } catch (err) {
         console.error("CREATE FULL BRACKET STRUCTURE ERROR:", err);
@@ -1240,6 +1403,7 @@ export const updateBracketMatch = async (req, res) => {
         // Find round (normalize for consistent matching)
         const roundNameNorm = normalizeRoundName(roundName);
         let roundIndex = bracketData.rounds.findIndex(r => normalizeRoundName(r?.name) === roundNameNorm);
+        
         if (roundIndex === -1) {
             return res.status(400).json({ message: `Round "${roundName}" not found` });
         }
@@ -2308,22 +2472,26 @@ export const deleteCategoryBracket = async (req, res) => {
             return res.status(404).json({ message: "Bracket not found" });
         }
 
-        const bracket = brackets[0];
-        if (bracket.published === true) {
+        // Check if ANY bracket is published
+        const publishedBracket = brackets.find(b => b.published === true);
+        if (publishedBracket) {
             return res.status(400).json({
                 message: "Cannot delete a published bracket. Unpublish first.",
                 code: "BRACKET_PUBLISHED"
             });
         }
 
+        // Delete ALL brackets for this category (handles duplicates)
+        const bracketIds = brackets.map(b => b.id);
         const { error: deleteError } = await supabaseAdmin
             .from("event_brackets")
             .delete()
-            .eq("id", bracket.id);
+            .in("id", bracketIds);
 
         if (deleteError) throw deleteError;
 
-        return res.json({ success: true, message: "Bracket deleted successfully" });
+        console.log("[deleteCategoryBracket] Deleted", bracketIds.length, "bracket(s) for category", categoryId || categoryLabel);
+        return res.json({ success: true, message: `Deleted ${bracketIds.length} bracket(s) successfully` });
     } catch (err) {
         console.error("DELETE BRACKET ERROR:", err);
         res.status(500).json({ message: "Failed to delete bracket", error: err.message });
@@ -2892,29 +3060,62 @@ export const finalizeByes = async (req, res) => {
  * POST /api/admin/events/:id/categories/:categoryId/bracket/result
  */
 export const recordResult = async (req, res) => {
+    //console.log("[recordResult] Called with params:", { eventId: req.params.id, categoryId: req.params.categoryId }, "body:", { matchId: req.body?.matchId, winner: req.body?.winner, roundName: req.body?.roundName, categoryLabel: req.body?.categoryLabel });
     try {
-        const { id: eventId, categoryId } = req.params;
-        const { matchId, winner, score, sets, roundName } = req.body;
+        let { id: eventId, categoryId } = req.params;
+        const { matchId, winner, score, sets, roundName, categoryLabel } = req.body;
 
-        if (!eventId || !isUuid(categoryId)) {
-            return res.status(400).json({ message: "Event ID and valid category ID required" });
+        if (!eventId) {
+            return res.status(400).json({ message: "Event ID required" });
+        }
+
+        // If categoryId is not a valid UUID, try to look it up by categoryLabel
+        if (!categoryId || !isUuid(categoryId)) {
+            if (!categoryLabel) {
+                return res.status(400).json({ message: "Valid category ID or categoryLabel required" });
+            }
+
+            // Look up the category by eventId and label
+            const { data: category, error: categoryError } = await supabaseAdmin
+                .from("event_categories")
+                .select("id")
+                .eq("event_id", eventId)
+                .eq("label", categoryLabel)
+                .single();
+
+            if (categoryError || !category) {
+                console.error("[recordResult] Category lookup error:", categoryError);
+                return res.status(400).json({ message: `Category "${categoryLabel}" not found for event` });
+            }
+
+            categoryId = category.id;
+            console.log("[recordResult] Resolved categoryLabel to categoryId:", categoryId);
         }
 
         if (!matchId || !winner) {
             return res.status(400).json({ message: "Missing matchId or winner" });
         }
 
-        // Fetch bracket
-        const { data: bracket } = await supabaseAdmin
+        // Fetch bracket - select the most recent in case of duplicates
+        const { data: brackets, error: bracketError } = await supabaseAdmin
             .from("event_brackets")
             .select("*")
             .eq("event_id", eventId)
             .eq("category_id", categoryId)
-            .single();
+            .order("created_at", { ascending: false })
+            .limit(1);
 
-        if (!bracket) {
+        if (bracketError) {
+            console.error("[recordResult] Bracket fetch error:", { eventId, categoryId, error: bracketError });
+            return res.status(404).json({ message: "Bracket not found", error: bracketError.message });
+        }
+
+        if (!brackets || brackets.length === 0) {
+            console.error("[recordResult] No bracket found for:", { eventId, categoryId });
             return res.status(404).json({ message: "Bracket not found" });
         }
+
+        const bracket = brackets[0];
 
         const bracketData = bracket.bracket_data || {};
         const normalizedRound = normalizeRoundName(roundName);

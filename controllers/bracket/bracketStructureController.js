@@ -327,19 +327,50 @@ export const createFullBracketStructure = async (req, res) => {
         // Calculate bracket sizing
         const bracketSize = nextPowerOfTwo(playerCount);
         const byesTotal = Math.max(0, bracketSize - playerCount);
-        const roundCount = Math.log2(bracketSize);
+        const roundCount = Math.ceil(Math.log2(bracketSize));  // Use CEIL to ensure integer count
+        
+        console.log(`[BRACKET STRUCTURE] Players: ${playerCount}, BracketSize: ${bracketSize}, RoundCount: ${roundCount}`);
+
 
         // Use provided round configs or generate defaults
-        const effectiveRoundConfigs = [];
+        // Only use roundConfigs if we have exactly roundCount and all names are unique
+        let effectiveRoundConfigs = [];
+        let shouldUseProvidedConfigs = Array.isArray(roundConfigs) && roundConfigs.length === roundCount;
+        if (shouldUseProvidedConfigs) {
+            // Check for duplicate round names
+            const roundNames = roundConfigs.map(cfg => cfg.name);
+            const uniqueNames = new Set(roundNames);
+            if (uniqueNames.size !== roundNames.length) {
+                console.warn(`[BRACKET STRUCTURE] Duplicate round names detected in provided configs:`, roundNames);
+                shouldUseProvidedConfigs = false;
+            }
+        }
+        console.log(`[BRACKET STRUCTURE] Should use provided configs? ${shouldUseProvidedConfigs} (have ${roundConfigs?.length || 0}, need ${roundCount})`);
         for (let i = 0; i < roundCount; i++) {
-            const cfg = (Array.isArray(roundConfigs) && roundConfigs[i]) || {};
+            let cfg = {};
+            if (shouldUseProvidedConfigs && roundConfigs[i]) {
+                cfg = roundConfigs[i];
+            }
             const matchCount = bracketSize / Math.pow(2, i + 1);
+            const finalName = (cfg.name && String(cfg.name).trim()) || inferRoundLabelFromMatchCount(matchCount, i);
             effectiveRoundConfigs.push({
-                name: (cfg.name && String(cfg.name).trim()) || inferRoundLabelFromMatchCount(matchCount, i),
+                name: finalName,
                 minSets: cfg.minSets || 1,
                 maxSets: cfg.maxSets || 7
             });
+            console.log(`[BRACKET STRUCTURE] Round ${i + 1}: matchCount=${matchCount}, name=${finalName}`);
         }
+        // Remove duplicate round names defensively
+        const seenNames = new Set();
+        effectiveRoundConfigs = effectiveRoundConfigs.filter(cfg => {
+            if (seenNames.has(cfg.name)) {
+                console.warn(`[BRACKET STRUCTURE] Removing duplicate round name: ${cfg.name}`);
+                return false;
+            }
+            seenNames.add(cfg.name);
+            return true;
+        });
+        console.log(`[BRACKET STRUCTURE] Final effective rounds: ${effectiveRoundConfigs.map(r => r.name).join(' -> ')}`);
 
         // BUILD ALL ROUNDS WITH EMPTY MATCHES
         const newRounds = [];
@@ -347,6 +378,17 @@ export const createFullBracketStructure = async (req, res) => {
         for (let r = 0; r < roundCount; r++) {
             const cfg = effectiveRoundConfigs[r];
             const matchCount = bracketSize / Math.pow(2, r + 1);
+            
+            if (!cfg || !cfg.name) {
+                console.error(`[BRACKET ERROR] Missing config for round ${r}, totalRounds=${roundCount}, configs=${effectiveRoundConfigs.length}`);
+                return res.status(500).json({
+                    message: "Internal error: Missing round configuration",
+                    code: "BRACKET_CONFIG_ERROR"
+                });
+            }
+            
+            console.log(`[BRACKET BUILD] Round ${r + 1}/${roundCount}: ${matchCount} matches, name="${cfg.name}"`);
+            
             const round = {
                 name: cfg.name,
                 matches: [],
@@ -608,6 +650,9 @@ export const createFullBracketStructure = async (req, res) => {
         const bracketData = bracket?.bracket_data || bracket?.draw_data || {};
         bracketData.rounds = newRounds;
         bracketData.players = players;
+        
+        console.log(`[BRACKET FINAL] Created bracket with ${newRounds.length} rounds: ${newRounds.map(r => r.name).join(' -> ')}`);
+        console.log(`[BRACKET FINAL] Each round has matches: ${newRounds.map(r => r.matches?.length || 0).join(', ')}`);
 
         // Save to database
         console.log("Updating event_brackets...");
