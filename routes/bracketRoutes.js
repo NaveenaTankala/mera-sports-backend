@@ -12,6 +12,7 @@ import {
     publishCategoryDraw,
     randomizeRound1Byes,
     recordResult,
+    replaceRoundMatches,
     resetBracket,
     updateBracketMatch,
     uploadCategoryMedia,
@@ -44,6 +45,10 @@ router.post("/events/:id/categories/media", verifyAdmin, uploadCategoryMedia); /
 // Bracket match operations
 router.post("/events/:id/categories/:categoryId/bracket/match", verifyAdmin, updateBracketMatch);
 router.post("/events/:id/categories/bracket/match", verifyAdmin, updateBracketMatch); // Alternative
+
+// Replace entire round matches (bulk seed for 100+ players)
+router.post("/events/:id/categories/:categoryId/bracket/round/replace", verifyAdmin, replaceRoundMatches);
+router.post("/events/:id/categories/bracket/round/replace", verifyAdmin, replaceRoundMatches); // Alternative with categoryLabel
 
 // Set match result
 router.post("/events/:id/categories/:categoryId/bracket/result", verifyAdmin, recordResult);
