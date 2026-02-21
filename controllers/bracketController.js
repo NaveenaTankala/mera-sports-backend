@@ -753,8 +753,8 @@ export const createFullBracketStructure = async (req, res) => {
             }
         }
 
-        console.log(`[START ROUNDS] Extracted ${players.length} unique players from ${registrationsForCategory.length} registrations:`, 
-            players.map(p => `${p.name}(${p.type})`).slice(0, 5));
+        // console.log(`[START ROUNDS] Extracted ${players.length} unique players from ${registrationsForCategory.length} registrations:`, 
+        //     players.map(p => `${p.name}(${p.type})`).slice(0, 5));
         
         const playerCount = players.length;
         if (playerCount < 2) {
@@ -764,14 +764,14 @@ export const createFullBracketStructure = async (req, res) => {
             });
         }
 
-        console.log(`[START ROUNDS] *** DIAGNOSTIC: playerIds=${playerIds?.length || 0}, registrations=${registrations.length}, registrationsForCategory=${registrationsForCategory.length}, extracted players=${playerCount}`);
+        //console.log(`[START ROUNDS] *** DIAGNOSTIC: playerIds=${playerIds?.length || 0}, registrations=${registrations.length}, registrationsForCategory=${registrationsForCategory.length}, extracted players=${playerCount}`);
         
         const bracketSize = nextPowerOfTwo(playerCount); // e.g. 13 -> 16
         const roundCount = Math.max(1, Math.log2(bracketSize));
 
-        console.log(`[START ROUNDS] bracketSize=${bracketSize}, roundCount=${roundCount}, playerCount=${playerCount}, bracketId=${bracket.id}`);
-        console.log(`[START ROUNDS] Bracket existing rounds in bracket_data:`, bracket.bracket_data?.rounds?.length || 0, 
-            bracket.bracket_data?.rounds?.map(r => `${r.name}(${r.matches?.length || 0})`) || 'none');
+        // console.log(`[START ROUNDS] bracketSize=${bracketSize}, roundCount=${roundCount}, playerCount=${playerCount}, bracketId=${bracket.id}`);
+        // console.log(`[START ROUNDS] Bracket existing rounds in bracket_data:`, bracket.bracket_data?.rounds?.length || 0, 
+        //     bracket.bracket_data?.rounds?.map(r => `${r.name}(${r.matches?.length || 0})`) || 'none');
 
         // Use provided round configs if present, otherwise infer simple names
         const effectiveRoundConfigs = [];
@@ -796,7 +796,7 @@ export const createFullBracketStructure = async (req, res) => {
         for (let r = 0; r < roundCount; r++) {
             const cfg = effectiveRoundConfigs[r];
             const matchCount = bracketSize / Math.pow(2, r + 1);
-            console.log(`[START ROUNDS]   Round ${r + 1} (${cfg.name}): ${matchCount} matches`);
+            //console.log(`[START ROUNDS]   Round ${r + 1} (${cfg.name}): ${matchCount} matches`);
             const round = {
                 name: cfg.name,
                 matches: [],
@@ -1023,7 +1023,7 @@ export const createFullBracketStructure = async (req, res) => {
             .delete()
             .eq("bracket_id", bracket.id);
         
-        console.log(`[START ROUNDS] Deleted ${deleteCount || 0} existing matches for bracket ${bracket.id}`);
+        //console.log(`[START ROUNDS] Deleted ${deleteCount || 0} existing matches for bracket ${bracket.id}`);
         
         if (deleteError && deleteError.code !== 'PGRST116') {  // PGRST116 = no rows deleted (ok)
             console.warn("Warning: Failed to clean up existing matches:", deleteError);
@@ -1065,9 +1065,9 @@ export const createFullBracketStructure = async (req, res) => {
         // Generate matches table entries for ALL rounds (Option B)
         // CRITICAL: Do NOT create DB match rows for Round 1 BYE matches (single player).
         const allInserts = [];
-        console.log(`[START ROUNDS] Building allInserts from ${newRounds.length} rounds:`);
+        //console.log(`[START ROUNDS] Building allInserts from ${newRounds.length} rounds:`);
         for (const [rIndex, round] of newRounds.entries()) {
-            console.log(`[START ROUNDS]   Round ${rIndex} (${round.name}): Processing ${round.matches?.length || 0} matches`);
+            //console.log(`[START ROUNDS]   Round ${rIndex} (${round.name}): Processing ${round.matches?.length || 0} matches`);
             for (const match of round.matches) {
                 const matchIndex = match.matchNumber - 1;
                 const hasValidPlayer = (p) => p && typeof p === "object" && Object.keys(p).length > 0 && (p.id || p.player_id);
@@ -1094,11 +1094,11 @@ export const createFullBracketStructure = async (req, res) => {
 
         if (allInserts.length > 0) {
             // FOURTH: Insert matches into database (all old matches deleted above)
-            console.log(`[START ROUNDS] Inserting ${allInserts.length} matches into database`);
-            console.log(`[START ROUNDS]   Match breakdown by round:`, allInserts.reduce((acc, m) => {
-                acc[m.round_name] = (acc[m.round_name] || 0) + 1;
-                return acc;
-            }, {}));
+            //console.log(`[START ROUNDS] Inserting ${allInserts.length} matches into database`);
+            // console.log(`[START ROUNDS]   Match breakdown by round:`, allInserts.reduce((acc, m) => {
+            //     acc[m.round_name] = (acc[m.round_name] || 0) + 1;
+            //     return acc;
+            // }, {}));
 
             const { error: insertError } = await supabaseAdmin
                 .from("matches")
@@ -1645,6 +1645,92 @@ export const updateBracketMatch = async (req, res) => {
     } catch (err) {
         console.error("UPDATE MATCH ERROR:", err);
         res.status(500).json({ message: "Failed to update match", error: err.message });
+    }
+};
+
+/**
+ * Replace entire round's matches in one shot (bulk seed for 100+ players).
+ * POST /api/admin/events/:id/categories/:categoryId/bracket/round/replace
+ * Body: { roundName, matches: [{ id, player1?, player2?, winner?, score? }, ...] }
+ */
+export const replaceRoundMatches = async (req, res) => {
+    try {
+        const { id: eventId, categoryId } = req.params;
+        const { categoryLabel, roundName, matches: incomingMatches } = req.body;
+
+        if (!eventId || (!categoryId && !categoryLabel)) {
+            return res.status(400).json({ message: "Event ID and Category required" });
+        }
+        if (!roundName || !Array.isArray(incomingMatches)) {
+            return res.status(400).json({ message: "roundName and matches array required" });
+        }
+
+        let query = supabaseAdmin
+            .from("event_brackets")
+            .select("*")
+            .eq("event_id", eventId)
+            .eq("mode", "BRACKET");
+
+        if (categoryId && isUuid(categoryId)) {
+            query = query.eq("category_id", categoryId);
+        } else {
+            query = query.eq("category", categoryLabel);
+        }
+
+        const { data: brackets, error: fetchError } = await query;
+        if (fetchError) throw fetchError;
+        if (!brackets || brackets.length === 0) {
+            return res.status(404).json({ message: "Bracket not found. Initialize bracket first." });
+        }
+
+        const bracket = brackets[0];
+        const bracketData = bracket.bracket_data || { rounds: [], players: [] };
+        const roundNameNorm = normalizeRoundName(roundName);
+        const roundIndex = bracketData.rounds.findIndex(r => normalizeRoundName(r?.name) === roundNameNorm);
+        if (roundIndex === -1) {
+            return res.status(400).json({ message: `Round "${roundName}" not found` });
+        }
+
+        const round = bracketData.rounds[roundIndex];
+        const existingMatchIds = (round.matches || []).map(m => m && m.id);
+        const newMatches = incomingMatches.map((m, idx) => {
+            const id = m && (m.id || existingMatchIds[idx]) || `R1-M${idx + 1}`;
+            const player1 = m && m.player1 && !isFakeByePlayer(m.player1) ? m.player1 : null;
+            const player2 = m && m.player2 && !isFakeByePlayer(m.player2) ? m.player2 : null;
+            return {
+                id,
+                player1: player1 || null,
+                player2: player2 || null,
+                winner: m && m.winner ? m.winner : null,
+                score: m && m.score ? m.score : null
+            };
+        });
+
+        bracketData.rounds[roundIndex] = { ...round, matches: newMatches };
+
+        const { data, error } = await supabaseAdmin
+            .from("event_brackets")
+            .update({
+                round_name: bracket.round_name || LEGACY_ROUND_NAME_BRACKET,
+                draw_type: "bracket",
+                draw_data: bracketData,
+                bracket_data: bracketData,
+                updated_at: new Date().toISOString()
+            })
+            .eq("id", bracket.id)
+            .select()
+            .maybeSingle();
+
+        if (error) throw error;
+
+        res.json({
+            success: true,
+            bracket: data,
+            message: "Round updated successfully"
+        });
+    } catch (err) {
+        console.error("REPLACE ROUND MATCHES ERROR:", err);
+        res.status(500).json({ message: "Failed to replace round matches", error: err.message });
     }
 };
 
