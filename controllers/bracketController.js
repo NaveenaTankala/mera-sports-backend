@@ -116,7 +116,8 @@ const nextPowerOfTwo = (n) => {
  * Returns the SEED NUMBER for each slot (index 0 = Slot 0, index 1 = Slot 1...).
  * MUST be IDENTICAL to the frontend generateCertifiedSeedingOrder in BracketBuilderTab.tsx.
  *
- * For 16-draw: [1,16,8,9,4,13,5,12,3,14,6,11,7,10,2,15]
+ * Rules: Seed 1 always Slot 0; Seed 2 always last slot; Seeds 3/4 symmetric certified positions.
+ * For 16-draw: [1,16,8,9,4,13,5,12,3,14,6,11,7,10,15,2]
  * For  8-draw: [1,8,4,5,3,6,7,2]
  */
 const generateCertifiedSeedingOrder = (n) => {
@@ -124,13 +125,19 @@ const generateCertifiedSeedingOrder = (n) => {
     if (n === 2) return [1, 2];
     if (n === 4) return [1, 4, 3, 2];
     if (n === 8) return [1, 8, 4, 5, 3, 6, 7, 2];
-    if (n === 16) return [1, 16, 8, 9, 4, 13, 5, 12, 3, 14, 6, 11, 7, 10, 2, 15];
-    // Recursive expansion for larger sizes (32, 64, ...):
+    if (n === 16) return [1, 16, 8, 9, 5, 12, 13, 4, 3, 14, 6, 11, 7, 10, 15, 2];
+    // Recursive expansion for larger sizes (32, 64, ...)
     const prev = generateCertifiedSeedingOrder(n / 2);
     const result = [];
     for (const seed of prev) {
         result.push(seed);
         result.push(n + 1 - seed);
+    }
+    // Seed 2 must always be in last slot
+    const idx2 = result.indexOf(2);
+    if (idx2 !== -1 && idx2 !== result.length - 1) {
+        result[idx2] = result[result.length - 1];
+        result[result.length - 1] = 2;
     }
     return result;
 };
@@ -753,18 +760,23 @@ export const createFullBracketStructure = async (req, res) => {
             }
         }
 
-        // console.log(`[START ROUNDS] Extracted ${players.length} unique players from ${registrationsForCategory.length} registrations:`, 
-        //     players.map(p => `${p.name}(${p.type})`).slice(0, 5));
+        // POOL/LEAGUE BRACKET FIX: When playerIds are explicitly provided, use playerIds.length
+        // as the authoritative player count for bracket sizing. The registration matching may
+        // fail or return wrong counts (e.g., ID format mismatch), but the frontend already
+        // knows exactly how many promoted players there are. This ensures 8 promoted players
+        // always produce a 3-round bracket (QF/SF/Final), not a 6-round "Round of 64".
+        const playerCount = (playerIds && Array.isArray(playerIds) && playerIds.length >= 2)
+            ? playerIds.length
+            : players.length;
         
-        const playerCount = players.length;
+        console.log(`[START ROUNDS] DIAGNOSTIC: playerIds=${playerIds?.length || 0}, matchedRegistrations=${registrations.length}, registrationsForCategory=${registrationsForCategory.length}, extractedPlayers=${players.length}, effectivePlayerCount=${playerCount}`);
+        
         if (playerCount < 2) {
             return res.status(400).json({
                 message: "At least 2 players are required to start rounds for this category.",
                 code: "INSUFFICIENT_PLAYERS"
             });
         }
-
-        //console.log(`[START ROUNDS] *** DIAGNOSTIC: playerIds=${playerIds?.length || 0}, registrations=${registrations.length}, registrationsForCategory=${registrationsForCategory.length}, extracted players=${playerCount}`);
         
         const bracketSize = nextPowerOfTwo(playerCount); // e.g. 13 -> 16
         const roundCount = Math.max(1, Math.log2(bracketSize));
@@ -2569,6 +2581,24 @@ export const deleteCategoryBracket = async (req, res) => {
 
         // Delete ALL brackets for this category (handles duplicates)
         const bracketIds = brackets.map(b => b.id);
+
+        // CRITICAL: Also delete all matches that belong to these brackets (by bracket_id)
+        // This is safer than a category-wide match delete which would wipe league/pool matches too
+        try {
+            const { error: matchDelError, count: matchDelCount } = await supabaseAdmin
+                .from("matches")
+                .delete()
+                .in("bracket_id", bracketIds);
+            if (matchDelError && matchDelError.code !== 'PGRST116') {
+                console.warn("[deleteCategoryBracket] Warning: Failed to delete bracket matches:", matchDelError);
+            } else {
+                console.log(`[deleteCategoryBracket] Deleted ${matchDelCount || 0} match(es) for bracket(s)`);
+            }
+        } catch (matchErr) {
+            console.warn("[deleteCategoryBracket] Warning: Match cleanup failed:", matchErr);
+            // Continue with bracket deletion even if match cleanup fails
+        }
+
         const { error: deleteError } = await supabaseAdmin
             .from("event_brackets")
             .delete()

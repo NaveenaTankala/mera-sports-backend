@@ -1,5 +1,6 @@
 import express from "express";
 import {
+    clearCategoryScores,
     createMatch,
     deleteCategoryMatches,
     deleteMatch,
@@ -33,8 +34,12 @@ router.post("/:eventId/finalize", finalizeRoundMatches);
 // POST /api/admin/matches/round-sets
 router.post("/round-sets/update", updateRoundSelectedSets);
 
+// Clear ONLY scores for a category (MUST come before full delete route)
+// DELETE /api/admin/matches/category/:eventId/scores?categoryId=xxx&categoryName=xxx&roundName=...
+router.delete("/category/:eventId/scores", clearCategoryScores);
+
 // Delete all matches for a category (MUST come before parameterized routes)
-// DELETE /api/admin/matches/category/:eventId?categoryId=xxx&categoryName=xxx
+// DELETE /api/admin/matches/category/:eventId?categoryId=xxx&categoryName=xxx&roundName=...
 router.delete("/category/:eventId", deleteCategoryMatches);
 
 // Update score and status

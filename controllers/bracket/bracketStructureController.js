@@ -49,7 +49,7 @@ export const generateCertifiedSeedingOrder = (n) => {
     if (n === 2) return [1, 2];
     if (n === 4) return [1, 4, 3, 2];
     if (n === 8) return [1, 8, 4, 5, 3, 6, 7, 2];
-    if (n === 16) return [1, 16, 8, 9, 4, 13, 5, 12, 3, 14, 6, 11, 7, 10, 2, 15];
+    if (n === 16) return [1, 16, 8, 9, 5, 12, 13, 4, 3, 14, 6, 11, 7, 10, 15, 2];
 
     // Recursive expansion for larger sizes (32, 64, ...)
     if (n > 16) {
@@ -58,6 +58,12 @@ export const generateCertifiedSeedingOrder = (n) => {
         for (const seed of prev) {
             result.push(seed);
             result.push(n + 1 - seed);
+        }
+        // Ensure Seed 2 is always in the last slot
+        const idx2 = result.indexOf(2);
+        if (idx2 !== -1 && idx2 !== result.length - 1) {
+            result[idx2] = result[result.length - 1];
+            result[result.length - 1] = 2;
         }
         return result;
     }

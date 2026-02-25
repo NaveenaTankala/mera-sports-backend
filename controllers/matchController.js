@@ -16,6 +16,7 @@ export const generateMatchesFromBracket = async (req, res) => {
     const categoryLabel = (req.query && req.query.categoryLabel) || (req.body && req.body.categoryLabel);
     const roundName = (req.query && req.query.roundName) || (req.body && req.body.roundName); // Optional: generate for specific round only
     const setsPerMatch = req.body?.setsPerMatch; // Sets configuration from round (optional)
+    const winnerMode = req.body?.winnerMode || 'set_based'; // Winner mode: 'set_based' or 'score_based'
 
     try {
         // 1. Fetch Bracket Data with UUID-safe query
@@ -75,13 +76,36 @@ export const generateMatchesFromBracket = async (req, res) => {
         // NOTE: Do NOT early-return if matches already exist for a round.
         // Admin can add new bracket matches later; generation must be idempotent per match_index:
         // - insert missing matches
-        // - skip existing matches
+        // - update existing matches with fresh player data (unless COMPLETED)
 
         let createdCount = 0;
         let skippedCount = 0;
+        let updatedCount = 0;
 
-        // 2. Loop through rounds and matches
-        // HARDENED: Bulk insert DB rows for matches to ensure performance and atomicity.
+        // 2. Fetch existing matches for this bracket so we can preserve COMPLETED data
+        const existingMatchIds = [];
+        for (const round of roundsToProcess) {
+            for (const matchData of (round.matches || [])) {
+                if (matchData?.id) existingMatchIds.push(String(matchData.id).trim());
+            }
+        }
+
+        let existingMatchesMap = new Map();
+        if (existingMatchIds.length > 0) {
+            const { data: existingMatches } = await supabaseAdmin
+                .from('matches')
+                .select('bracket_match_id, status, score, winner')
+                .eq('bracket_id', bracketData.id)
+                .in('bracket_match_id', existingMatchIds);
+            if (existingMatches) {
+                for (const m of existingMatches) {
+                    existingMatchesMap.set(m.bracket_match_id, m);
+                }
+            }
+        }
+
+        // 3. Loop through rounds and matches
+        // HARDENED: Bulk upsert DB rows for matches to ensure performance and atomicity.
         // match_index stays contiguous and bracket_match_id is the lookup key.
         const bulkPayload = [];
 
@@ -106,7 +130,12 @@ export const generateMatchesFromBracket = async (req, res) => {
 
                 const matchCategoryId = bracketCategoryId || categoryId;
 
+                // Check if this match already exists and is COMPLETED
+                const existingMatch = existingMatchesMap.get(bracketMatchId);
+                const isCompleted = existingMatch && existingMatch.status === 'COMPLETED';
+
                 // Only store player_a/player_b if they have valid ids (never store empty objects)
+                // For COMPLETED matches: update players but preserve score, winner, and status
                 const payload = {
                     event_id: eventId,
                     category_id: matchCategoryId,
@@ -116,10 +145,14 @@ export const generateMatchesFromBracket = async (req, res) => {
                     player_a: hasPlayer1 ? matchData.player1 : null,
                     player_b: hasPlayer2 ? matchData.player2 : null,
                     bracket_match_id: bracketMatchId,
-                    score: null,
-                    winner: null,
-                    status: isBye ? 'BYE' : 'SCHEDULED'
+                    score: isCompleted ? existingMatch.score : null,
+                    winner: isCompleted ? existingMatch.winner : null,
+                    status: isCompleted ? 'COMPLETED' : (isBye ? 'BYE' : 'SCHEDULED')
                 };
+
+                if (existingMatch && !isCompleted) {
+                    updatedCount++;
+                }
 
                 bulkPayload.push(payload);
             }
@@ -130,7 +163,7 @@ export const generateMatchesFromBracket = async (req, res) => {
                 .from('matches')
                 .upsert(bulkPayload, {
                     onConflict: 'bracket_id,bracket_match_id',
-                    ignoreDuplicates: true
+                    ignoreDuplicates: false
                 })
                 .select();
 
@@ -153,6 +186,8 @@ export const generateMatchesFromBracket = async (req, res) => {
                     }
                     // Store the selected sets (this will be used by scoreboard)
                     rounds[roundIndex].setsConfig.selectedSets = setsPerMatch;
+                    // Store the winner mode (set_based or score_based)
+                    rounds[roundIndex].setsConfig.winnerMode = winnerMode;
                     
                     // Update bracket_data in database
                     const updatedBracketData = {
@@ -176,8 +211,8 @@ export const generateMatchesFromBracket = async (req, res) => {
 
         return res.status(200).json({
             success: true,
-            message: `Processed matches. Created: ${createdCount}, Skipped (Existing): ${skippedCount}`,
-            stats: { createdCount, skippedCount }
+            message: `Processed matches. Created/Updated: ${createdCount}, Skipped (no ID): ${skippedCount}, Updated (player changes): ${updatedCount}`,
+            stats: { createdCount, skippedCount, updatedCount }
         });
 
     } catch (error) {
@@ -189,20 +224,22 @@ export const generateMatchesFromBracket = async (req, res) => {
 // Update selected sets (Best of N) for a specific bracket round without regenerating matches
 export const updateRoundSelectedSets = async (req, res) => {
     try {
-        const { eventId, categoryId, categoryName, roundName, selectedSets } = req.body || {};
+        const { eventId, categoryId, categoryName, roundName, selectedSets, winnerMode } = req.body || {};
 
-        if (!eventId || !roundName || selectedSets == null) {
+        if (!eventId || !roundName) {
             return res.status(400).json({
                 success: false,
-                message: "eventId, roundName and selectedSets are required"
+                message: "eventId and roundName are required"
             });
         }
 
-        const setsNum = Number(selectedSets);
-        if (!Number.isInteger(setsNum) || setsNum <= 0) {
+        // Allow selectedSets=0 or null to CLEAR the stored value (used after deleting a round)
+        const clearMode = selectedSets === 0 || selectedSets === null || selectedSets === undefined;
+        const setsNum = clearMode ? 0 : Number(selectedSets);
+        if (!clearMode && (!Number.isInteger(setsNum) || setsNum <= 0)) {
             return res.status(400).json({
                 success: false,
-                message: "selectedSets must be a positive integer"
+                message: "selectedSets must be a positive integer (or 0/null to clear)"
             });
         }
 
@@ -244,27 +281,38 @@ export const updateRoundSelectedSets = async (req, res) => {
         }
 
         const cfg = rounds[roundIndex].setsConfig;
-        if (cfg.minSets && setsNum < cfg.minSets) {
-            return res.status(400).json({
-                success: false,
-                message: `selectedSets must be >= minSets (${cfg.minSets})`
-            });
-        }
-        if (cfg.maxSets && setsNum > cfg.maxSets) {
-            return res.status(400).json({
-                success: false,
-                message: `selectedSets must be <= maxSets (${cfg.maxSets})`
-            });
-        }
-        // Validate that selectedSets is odd (except for 1 set which is allowed)
-        if (setsNum !== 1 && setsNum % 2 !== 1) {
-            return res.status(400).json({
-                success: false,
-                message: `selectedSets must be an odd number (1, 3, 5, or 7)`
-            });
+
+        if (clearMode) {
+            // Clear: remove selectedSets so the sets picker shows again
+            delete rounds[roundIndex].setsConfig.selectedSets;
+        } else {
+            if (cfg.minSets && setsNum < cfg.minSets) {
+                return res.status(400).json({
+                    success: false,
+                    message: `selectedSets must be >= minSets (${cfg.minSets})`
+                });
+            }
+            if (cfg.maxSets && setsNum > cfg.maxSets) {
+                return res.status(400).json({
+                    success: false,
+                    message: `selectedSets must be <= maxSets (${cfg.maxSets})`
+                });
+            }
+            // Validate that selectedSets is odd (except for 1 set which is allowed)
+            if (setsNum !== 1 && setsNum % 2 !== 1) {
+                return res.status(400).json({
+                    success: false,
+                    message: `selectedSets must be an odd number (1, 3, 5, or 7)`
+                });
+            }
+
+            rounds[roundIndex].setsConfig.selectedSets = setsNum;
         }
 
-        rounds[roundIndex].setsConfig.selectedSets = setsNum;
+        // Save winnerMode if provided
+        if (winnerMode && (winnerMode === 'set_based' || winnerMode === 'score_based')) {
+            rounds[roundIndex].setsConfig.winnerMode = winnerMode;
+        }
 
         const updatedBracketData = {
             ...bracketDataObj,
@@ -1062,7 +1110,8 @@ export const updateMatchScore = async (req, res) => {
             updated_at: new Date().toISOString()
         };
 
-        if (score) updatePayload.score = score;
+        // Use explicit undefined checks so null values can clear fields (score=null clears the score)
+        if (score !== undefined) updatePayload.score = score;
         if (status) updatePayload.status = status;
         if (winner !== undefined) updatePayload.winner = winner;
 
@@ -1227,7 +1276,7 @@ export const updateMatchScore = async (req, res) => {
 // Finalize all matches in a round (calculate winners and set status to COMPLETED)
 export const finalizeRoundMatches = async (req, res) => {
     const { eventId } = req.params;
-    const { categoryId, categoryName, roundName, matches } = req.body;
+    const { categoryId, categoryName, roundName, matches, winnerMode: requestWinnerMode } = req.body;
 
     if (!eventId || !roundName || !matches || !Array.isArray(matches) || matches.length === 0) {
         return res.status(400).json({
@@ -1284,9 +1333,10 @@ export const finalizeRoundMatches = async (req, res) => {
             }
         }
 
-        // Get setsPerMatch and bracket data (for enriching empty player_a/player_b)
+        // Get setsPerMatch, winnerMode, and bracket data (for enriching empty player_a/player_b)
         // IMPORTANT: Fetch bracket data even without roundName - we need it for player lookup
         let categorySetsPerMatch = 1; // Default to 1 set if not configured
+        let categoryWinnerMode = requestWinnerMode || 'set_based'; // Default to set_based
         let bracketDataObjForFinalize = null;
         try {
             // Always try to fetch bracket data if we have eventId and category info
@@ -1309,7 +1359,7 @@ export const finalizeRoundMatches = async (req, res) => {
                 const rounds = bracketDataObjForFinalize.rounds || [];
                 console.log(`[Finalize] Fetched bracket with ${rounds.length} rounds:`, rounds.map(r => r.name));
                 
-                // If roundName provided, try to get setsPerMatch from that specific round
+                // If roundName provided, try to get setsPerMatch and winnerMode from that specific round
                 if (roundName) {
                     // Normalize round name comparison (case-insensitive, trim whitespace)
                     const normalizedRoundName = String(roundName || '').trim().toLowerCase();
@@ -1317,8 +1367,14 @@ export const finalizeRoundMatches = async (req, res) => {
                         if (!r || !r.name) return false;
                         return String(r.name).trim().toLowerCase() === normalizedRoundName;
                     });
-                    if (round && round.setsConfig && round.setsConfig.selectedSets) {
-                        categorySetsPerMatch = round.setsConfig.selectedSets;
+                    if (round && round.setsConfig) {
+                        if (round.setsConfig.selectedSets) {
+                            categorySetsPerMatch = round.setsConfig.selectedSets;
+                        }
+                        // Read winnerMode from bracket setsConfig if not provided in request
+                        if (!requestWinnerMode && round.setsConfig.winnerMode) {
+                            categoryWinnerMode = round.setsConfig.winnerMode;
+                        }
                     }
                 }
             } else {
@@ -1472,10 +1528,14 @@ export const finalizeRoundMatches = async (req, res) => {
 
                 let player1SetsWon = 0;
                 let player2SetsWon = 0;
+                let player1TotalPoints = 0;
+                let player2TotalPoints = 0;
                 const setsToWin = Math.ceil(categorySetsPerMatch / 2);
                 for (const set of sets) {
                     const p1Score = parseInt(set.player1 || 0);
                     const p2Score = parseInt(set.player2 || 0);
+                    player1TotalPoints += p1Score;
+                    player2TotalPoints += p2Score;
                     if (p1Score > p2Score) player1SetsWon++;
                     else if (p2Score > p1Score) player2SetsWon++;
                 }
@@ -1495,24 +1555,51 @@ export const finalizeRoundMatches = async (req, res) => {
                     });
                 }
                 
-                if (player1SetsWon >= setsToWin) {
-                    winner = winnerIdA;
-                } else if (player2SetsWon >= setsToWin) {
-                    winner = winnerIdB;
-                } else {
-                    if (player1SetsWon === player2SetsWon) {
-                        if (isLeagueMatch) {
-                            winner = null;
-                        } else {
-                            return res.status(400).json({
-                                success: false,
-                                message: `Draw is not allowed for knockout matches. Please correct the set scores for match ${matchData.matchId}.`
-                            });
-                        }
-                    } else if (player1SetsWon > player2SetsWon) {
+                if (categoryWinnerMode === 'score_based') {
+                    // Score-based: winner decided by total points across ALL sets
+                    // Tiebreak: player who won more sets
+                    if (player1TotalPoints > player2TotalPoints) {
                         winner = winnerIdA;
-                    } else {
+                    } else if (player2TotalPoints > player1TotalPoints) {
                         winner = winnerIdB;
+                    } else {
+                        // Total points tied - use set wins as tiebreak
+                        if (player1SetsWon > player2SetsWon) {
+                            winner = winnerIdA;
+                        } else if (player2SetsWon > player1SetsWon) {
+                            winner = winnerIdB;
+                        } else {
+                            if (isLeagueMatch) {
+                                winner = null; // Draw allowed in league
+                            } else {
+                                return res.status(400).json({
+                                    success: false,
+                                    message: `Score-based tiebreak: total points AND set wins are equal for match ${matchData.matchId}. Please correct scores.`
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    // Set-based (default): first to win majority of sets
+                    if (player1SetsWon >= setsToWin) {
+                        winner = winnerIdA;
+                    } else if (player2SetsWon >= setsToWin) {
+                        winner = winnerIdB;
+                    } else {
+                        if (player1SetsWon === player2SetsWon) {
+                            if (isLeagueMatch) {
+                                winner = null;
+                            } else {
+                                return res.status(400).json({
+                                    success: false,
+                                    message: `Draw is not allowed for knockout matches. Please correct the set scores for match ${matchData.matchId}.`
+                                });
+                            }
+                        } else if (player1SetsWon > player2SetsWon) {
+                            winner = winnerIdA;
+                        } else {
+                            winner = winnerIdB;
+                        }
                     }
                 }
 
@@ -1920,14 +2007,12 @@ export const deleteCategoryMatches = async (req, res) => {
     }
 
     try {
-        // First, get all matches for this event to see what we're working with
         const { data: allMatches, error: fetchError } = await supabaseAdmin
             .from('matches')
             .select('id, category_id, event_id')
             .eq('event_id', eventId);
 
         if (fetchError) {
-            console.error("Fetch matches error:", fetchError);
             throw fetchError;
         }
 
@@ -1940,7 +2025,7 @@ export const deleteCategoryMatches = async (req, res) => {
         }
 
         // Filter matches by category (and optional round) - try multiple matching strategies
-        // CRITICAL: Use exact matching to avoid deleting matches from other categories
+        // CRITICAL: Use exact matching to avoid deleting matches from other categories/rounds
         let matchesToDelete = allMatches.filter(match => {
             const matchCategoryId = match.category_id;
             if (!matchCategoryId) return false;
@@ -1951,14 +2036,13 @@ export const deleteCategoryMatches = async (req, res) => {
             }
 
             // Strategy 2: Exact text/numeric match (categoryId as text or number)
+            // IMPORTANT: If categoryId was provided, ONLY match by categoryId.
+            // Do NOT fall through to categoryName — that would match other rounds.
             if (categoryId) {
-                // Use == for type coercion (handles number vs string)
-                if (matchCategoryId == categoryId || String(matchCategoryId) === String(categoryId)) {
-                    return true;
-                }
+                return matchCategoryId == categoryId || String(matchCategoryId) === String(categoryId);
             }
 
-            // Strategy 3: Category name exact match (if category_id stores the full label)
+            // Strategy 3: Category name exact match (ONLY when categoryId was not provided)
             if (categoryName && (matchCategoryId === categoryName || String(matchCategoryId) === String(categoryName))) {
                 return true;
             }
@@ -2017,6 +2101,112 @@ export const deleteCategoryMatches = async (req, res) => {
             success: false,
             message: "Failed to delete category matches",
             error: error.message
+        });
+    }
+};
+
+// Clear ONLY scores (keep matches) for a category (and optional round)
+// DELETE /api/admin/matches/category/:eventId/scores?categoryId=&categoryName=&roundName=
+export const clearCategoryScores = async (req, res) => {
+    const { eventId } = req.params;
+    const { categoryId, categoryName, roundName, round_name } = req.query;
+    const effectiveRoundName = (roundName || round_name) ? String(roundName || round_name).trim() : null;
+
+    if (!eventId) {
+        return res.status(400).json({ success: false, message: "Event ID is required" });
+    }
+
+    if (!categoryId && !categoryName) {
+        return res.status(400).json({ success: false, message: "Category ID or Category Name is required" });
+    }
+
+    try {
+        const { data: allMatches, error: fetchError } = await supabaseAdmin
+            .from("matches")
+            .select("id, category_id, event_id, round_name")
+            .eq("event_id", eventId);
+
+        if (fetchError) {
+            throw fetchError;
+        }
+
+        if (!allMatches || allMatches.length === 0) {
+            return res.status(200).json({
+                success: true,
+                message: "No matches found for this category",
+                updatedCount: 0
+            });
+        }
+
+        // Reuse the same safe category matching logic as deleteCategoryMatches
+        let matchesToUpdate = allMatches.filter(match => {
+            const matchCategoryId = match.category_id;
+            if (!matchCategoryId) return false;
+
+            // Strategy 1: Exact UUID match (most reliable)
+            if (categoryId && isUuid(categoryId)) {
+                return String(matchCategoryId) === String(categoryId);
+            }
+
+            // Strategy 2: Exact text/numeric match (categoryId as text or number)
+            // IMPORTANT: If categoryId was provided, ONLY match by categoryId.
+            // Do NOT fall through to categoryName — that would match other rounds.
+            if (categoryId) {
+                return matchCategoryId == categoryId || String(matchCategoryId) === String(categoryId);
+            }
+
+            // Strategy 3: Category name exact match (ONLY when categoryId was not provided)
+            if (categoryName && (matchCategoryId === categoryName || String(matchCategoryId) === String(categoryName))) {
+                return true;
+            }
+
+            return false;
+        });
+
+        // Optional: filter by roundName if provided (e.g., LEAGUE only)
+        if (effectiveRoundName) {
+            matchesToUpdate = matchesToUpdate.filter(
+                m => String(m.round_name || "").trim() === effectiveRoundName
+            );
+        }
+
+        if (!matchesToUpdate || matchesToUpdate.length === 0) {
+            return res.status(200).json({
+                success: true,
+                message: "No matches found to clear scores for this category/round",
+                updatedCount: 0
+            });
+        }
+
+        const matchIds = matchesToUpdate.map(m => m.id);
+
+        const { data: updated, error: updateError } = await supabaseAdmin
+            .from("matches")
+            .update({
+                score: null,
+                winner: null,
+                status: "SCHEDULED",
+                updated_at: new Date().toISOString()
+            })
+            .in("id", matchIds)
+            .select("id");
+
+        if (updateError) {
+            throw updateError;
+        }
+
+        const updatedCount = Array.isArray(updated) ? updated.length : 0;
+
+        return res.status(200).json({
+            success: true,
+            message: `Cleared scores for ${updatedCount} match(es)`,
+            updatedCount
+        });
+    } catch (err) {
+        console.error("Clear Category Scores Error:", err);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to clear scores for this category"
         });
     }
 };
@@ -2332,7 +2522,7 @@ export const getMatches = async (req, res) => {
             // Filter in memory (handles all cases including UUID/string mismatches)
             let filteredMatches = retryData || [];
 
-            // Filter by categoryId (exact match)
+            // Filter by categoryId first (exact match), fall back to categoryName ONLY if categoryId not provided
             if (categoryId) {
                 filteredMatches = filteredMatches.filter(m => {
                     const matchCategoryId = m.category_id;
@@ -2340,10 +2530,8 @@ export const getMatches = async (req, res) => {
                     // Use == for type coercion (handles number vs string)
                     return matchCategoryId == categoryId || String(matchCategoryId) === String(categoryId);
                 });
-            }
-
-            // Filter by categoryName if provided (treat as category_id)
-            if (categoryName) {
+            } else if (categoryName) {
+                // Only use categoryName when categoryId is not provided
                 filteredMatches = filteredMatches.filter(m => {
                     const matchCategoryId = m.category_id;
                     if (!matchCategoryId) return false;
