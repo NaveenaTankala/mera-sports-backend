@@ -32,9 +32,9 @@ app.use("/api/auth", googleSyncRoutes);
 app.use("/api/events", eventRoutes);
 app.use("/api/payment", paymentRoutes); // Mounted Payment Routes
 app.use("/api/admin/matches", matchRoutes); // Scoreboard Matches Routes (Prioritized)
-app.use("/api/admin", bracketRoutes); // Bracket Management Routes (Prioritized)
+app.use("/api/admin", leagueRoutes); // League routes (must be before bracket/admin to match /events/.../league)
+app.use("/api/admin", bracketRoutes); // Bracket Management Routes
 app.use("/api/admin", adminRoutes);
-app.use("/api/admin", leagueRoutes); // League (round-robin) configuration routes
 app.use("/api/advertisements", advertisementRoutes);
 app.use("/api/apartments", apartmentRoutes);
 app.use("/api/teams", teamRoutes);

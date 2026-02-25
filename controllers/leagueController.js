@@ -22,29 +22,45 @@ export const getLeagueConfig = async (req, res) => {
             return res.status(400).json({ success: false, message: "Event ID and Category required" });
         }
 
+        //console.log(`📋 Getting league config: eventId=${eventId}, categoryId=${categoryId}, categoryLabel=${categoryLabel}`);
+
         let query = supabaseAdmin
             .from("leagues")
             .select("*")
             .eq("event_id", eventId);
 
-        // Try category_id first (can be UUID or string like "1767354643599")
+        // IMPORTANT: Use category_id as primary identifier (can be UUID or string like "1767354643599")
         if (categoryId) {
-            // category_id in leagues table is TEXT, so it accepts both UUID and string IDs
             query = query.eq("category_id", String(categoryId));
         } else if (categoryLabel) {
-            // Use category_label for lookup (fallback)
+            // Use category_label as fallback only if category_id not provided
             query = query.eq("category_label", categoryLabel);
         }
 
-        const { data, error } = await query.maybeSingle();
+        let { data, error } = await query.maybeSingle();
 
         if (error && error.code !== "PGRST116") {
             // PGRST116 = no rows found
             throw error;
         }
 
+        // If not found AND categoryId was provided but not UUID, try category_label as fallback
+        if (!data && categoryId && !isUuid(categoryId)) {
+            const fallbackQuery = supabaseAdmin
+                .from("leagues")
+                .select("*")
+                .eq("event_id", eventId)
+                .eq("category_label", String(categoryId));
+            
+            const { data: fallbackData, error: fallbackError } = await fallbackQuery.maybeSingle();
+            if (!fallbackError || fallbackError.code === "PGRST116") {
+                data = fallbackData;
+            }
+        }
+
         if (!data) {
-            // No config yet – return sensible defaults
+            // No config yet - return sensible defaults
+            console.log(`ℹ️ No league config found for eventId=${eventId}, categoryId=${categoryId}. Returning defaults.`);
             return res.json({
                 success: true,
                 league: {
@@ -53,12 +69,18 @@ export const getLeagueConfig = async (req, res) => {
                     rules: {
                         pointsWin: 3,
                         pointsLoss: 0,
-                        pointsDraw: 1
+                        pointsDraw: 1,
+                        win: 3,
+                        loss: 0,
+                        draw: 1,
+                        setsPerMatch: 1
                     }
                 }
             });
         }
 
+        //console.log(`✅ Found league config: categoryId=${data.category_id}, participants=${data.participants?.length || 0}`);
+        
         return res.json({
             success: true,
             league: {
@@ -67,12 +89,15 @@ export const getLeagueConfig = async (req, res) => {
                 rules: data.rules || {
                     pointsWin: 3,
                     pointsLoss: 0,
-                    pointsDraw: 1
+                    pointsDraw: 1,
+                    win: 3,
+                    loss: 0,
+                    draw: 1,
+                    setsPerMatch: 1
                 }
             }
         });
     } catch (err) {
-        console.error("GET LEAGUE CONFIG ERROR:", err);
         return res.status(500).json({ success: false, message: "Failed to fetch league config" });
     }
 };
@@ -92,6 +117,8 @@ export const saveLeagueConfig = async (req, res) => {
         if (!eventId || (!categoryId && !categoryLabel)) {
             return res.status(400).json({ success: false, message: "Event ID and Category required" });
         }
+
+        //console.log(`💾 Saving league config: eventId=${eventId}, categoryId=${categoryId}, categoryLabel=${categoryLabel}, participants=${participants?.length || 0}`);
 
         if (!Array.isArray(participants) || participants.length === 0) {
             return res.status(400).json({ success: false, message: "At least one participant is required" });
@@ -118,87 +145,79 @@ export const saveLeagueConfig = async (req, res) => {
             return res.status(400).json({ success: false, message: "Participants must have id and name" });
         }
 
-        // Warn if duplicates were removed
-        if (cleanedParticipants.length < participants.length) {
-            console.warn(`Removed ${participants.length - cleanedParticipants.length} duplicate participant(s) from league config`);
-        }
-
         const defaultRules = {
             pointsWin: 3,
             pointsLoss: 0,
-            pointsDraw: 1
+            pointsDraw: 1,
+            setsPerMatch: 1
         };
 
+        // Preserve all rule fields sent from frontend (win, loss, draw, setsPerMatch)
+        // Also support backend format (pointsWin, pointsLoss, pointsDraw)
         const cleanedRules = {
-            pointsWin: typeof rules?.pointsWin === "number" ? rules.pointsWin : defaultRules.pointsWin,
-            pointsLoss: typeof rules?.pointsLoss === "number" ? rules.pointsLoss : defaultRules.pointsLoss,
-            pointsDraw: typeof rules?.pointsDraw === "number" ? rules.pointsDraw : defaultRules.pointsDraw
+            // Support both frontend format (win/loss/draw) and backend format (pointsWin/pointsLoss/pointsDraw)
+            win: typeof rules?.win === "number" ? rules.win : (typeof rules?.pointsWin === "number" ? rules.pointsWin : defaultRules.pointsWin),
+            loss: typeof rules?.loss === "number" ? rules.loss : (typeof rules?.pointsLoss === "number" ? rules.pointsLoss : defaultRules.pointsLoss),
+            draw: typeof rules?.draw === "number" ? rules.draw : (typeof rules?.pointsDraw === "number" ? rules.pointsDraw : defaultRules.pointsDraw),
+            // Also preserve setsPerMatch if provided
+            setsPerMatch: typeof rules?.setsPerMatch === "number" ? rules.setsPerMatch : defaultRules.setsPerMatch,
+            // Keep backend format fields for backward compatibility
+            pointsWin: typeof rules?.pointsWin === "number" ? rules.pointsWin : (typeof rules?.win === "number" ? rules.win : defaultRules.pointsWin),
+            pointsLoss: typeof rules?.pointsLoss === "number" ? rules.pointsLoss : (typeof rules?.loss === "number" ? rules.loss : defaultRules.pointsLoss),
+            pointsDraw: typeof rules?.pointsDraw === "number" ? rules.pointsDraw : (typeof rules?.draw === "number" ? rules.draw : defaultRules.pointsDraw)
         };
 
         // Determine category_id and category_label
         // category_id can be UUID or string/number ID (like "1767354643599")
         // Store the categoryId as-is if provided (leagues.category_id is TEXT, so accepts any string)
         const categoryIdValue = categoryId ? String(categoryId) : null;
-        const categoryLabelValue = categoryLabel || categoryId || "Unknown";
+        let categoryLabelValue = categoryLabel || categoryId || "Unknown";
 
-        // Check if league already exists
-        let existingQuery = supabaseAdmin
-            .from("leagues")
-            .select("*")
-            .eq("event_id", eventId)
-            .eq("category_label", categoryLabelValue);
-
-        const { data: existing, error: fetchError } = await existingQuery.maybeSingle();
-
-        if (fetchError && fetchError.code !== "PGRST116") {
-            throw fetchError;
-        }
-
-        if (existing) {
-            // Update existing league
-            const { data, error } = await supabaseAdmin
+        // FIX: If we already have a record for this category_id, use ITS category_label
+        // to prevent creating duplicate rows when categoryLabel differs between calls
+        if (categoryIdValue) {
+            const { data: existing } = await supabaseAdmin
                 .from("leagues")
-                .update({
-                    category_id: categoryIdValue,
-                    category_label: categoryLabelValue,
-                    participants: cleanedParticipants,
-                    rules: cleanedRules,
-                    updated_at: new Date().toISOString()
-                })
-                .eq("id", existing.id)
-                .select()
+                .select("category_label")
+                .eq("event_id", eventId)
+                .eq("category_id", categoryIdValue)
                 .maybeSingle();
-
-            if (error) throw error;
-
-            return res.json({
-                success: true,
-                league: {
-                    format: "LEAGUE",
-                    participants: cleanedParticipants,
-                    rules: cleanedRules
-                },
-                leagueId: data.id,
-                message: "League configuration updated"
-            });
+            if (existing && existing.category_label) {
+                categoryLabelValue = existing.category_label;
+            }
         }
 
-        // Create new league
-        const insertPayload = {
+        //console.log(`📝 UPSERT VALUES: eventId=${eventId}, categoryId=${categoryIdValue}, categoryLabel=${categoryLabelValue} (will be used in UNIQUE constraint)`);
+
+        // UPSERT: Use atomic insert-or-update to avoid race conditions
+        // This handles concurrent requests to create the same (event_id, category_label) pair
+       // console.log(`📝 Upserting league for categoryId=${categoryId}, categoryLabel=${categoryLabelValue}`);
+        
+        const upsertPayload = {
             event_id: eventId,
             category_id: categoryIdValue,
             category_label: categoryLabelValue,
             participants: cleanedParticipants,
-            rules: cleanedRules
+            rules: cleanedRules,
+            updated_at: new Date().toISOString()
         };
 
         const { data, error } = await supabaseAdmin
             .from("leagues")
-            .insert(insertPayload)
+            .upsert(upsertPayload, {
+                // The database has a unique constraint on (event_id, category_label)
+                // Pass the column names that make up the constraint
+                onConflict: "event_id,category_label"
+            })
             .select()
             .maybeSingle();
 
-        if (error) throw error;
+        if (error) {
+            console.error(`❌ Upsert failed for categoryId=${categoryId}: ${error.code} - ${error.message}`);
+            throw error;
+        }
+
+        console.log(`✅ League saved successfully for categoryId=${categoryId}`);
 
         return res.status(201).json({
             success: true,
@@ -211,8 +230,8 @@ export const saveLeagueConfig = async (req, res) => {
             message: "League configuration saved"
         });
     } catch (err) {
-        console.error("SAVE LEAGUE CONFIG ERROR:", err);
-        return res.status(500).json({ success: false, message: "Failed to save league config" });
+        console.error(`🚨 SaveLeagueConfig ERROR: ${err.message || err.code || err}`);
+        return res.status(500).json({ success: false, message: err.message || "Failed to save league config", errorCode: err.code });
     }
 };
 
@@ -236,20 +255,33 @@ export const deleteLeague = async (req, res) => {
         }
 
         // Find the league record
+        // Use category_id as PRIMARY lookup (works for both UUID and non-UUID like "1767354643599")
         let query = supabaseAdmin
             .from("leagues")
             .select("*")
             .eq("event_id", eventId);
 
-        if (categoryId && isUuid(categoryId)) {
-            query = query.eq("category_id", categoryId);
+        if (categoryId) {
+            query = query.eq("category_id", String(categoryId));
         } else if (categoryLabel) {
             query = query.eq("category_label", categoryLabel);
-        } else if (categoryId) {
-            query = query.eq("category_label", categoryId);
         }
 
-        const { data: leagueRecord, error: fetchError } = await query.maybeSingle();
+        let { data: leagueRecord, error: fetchError } = await query.maybeSingle();
+
+        // Fallback: if not found by category_id and it's non-UUID, try category_label
+        if (!leagueRecord && categoryId && !isUuid(categoryId)) {
+            const fallbackQuery = supabaseAdmin
+                .from("leagues")
+                .select("*")
+                .eq("event_id", eventId)
+                .eq("category_label", categoryLabel || String(categoryId));
+            const { data: fallbackData, error: fallbackError } = await fallbackQuery.maybeSingle();
+            if (!fallbackError || fallbackError?.code === "PGRST116") {
+                leagueRecord = fallbackData;
+                fetchError = null;
+            }
+        }
 
         if (fetchError && fetchError.code !== "PGRST116") {
             throw fetchError;
@@ -279,7 +311,6 @@ export const deleteLeague = async (req, res) => {
                 .eq("round_name", "LEAGUE");
 
             if (fetchMatchesError) {
-                console.error("Error fetching league matches for deletion:", fetchMatchesError);
                 // Continue with league deletion even if match fetch fails
             } else {
                 // Filter matches in memory to ensure exact category match
@@ -288,13 +319,8 @@ export const deleteLeague = async (req, res) => {
                     const mCatId = m.category_id;
                     if (!mCatId) return false;
 
-                    // Try exact match first
+                    // Use strict string comparison only
                     if (String(mCatId) === String(categoryIdForMatches)) {
-                        return true;
-                    }
-
-                    // Try type-coerced match
-                    if (mCatId == categoryIdForMatches) {
                         return true;
                     }
 
@@ -319,13 +345,10 @@ export const deleteLeague = async (req, res) => {
                         .in("id", matchIds);
 
                     if (matchDeleteError) {
-                        console.error("Error deleting league matches:", matchDeleteError);
                         // Continue with league deletion even if match deletion fails
                     } else {
-                        console.log(`Deleted ${matchesToDelete.length} league match(es) for category ${categoryLabelForMatches}`);
                     }
                 } else {
-                    console.log(`No league matches found to delete for category ${categoryLabelForMatches}`);
                 }
             }
         }
@@ -348,7 +371,6 @@ export const deleteLeague = async (req, res) => {
             deletedLeagueId: leagueRecord.id
         });
     } catch (err) {
-        console.error("DELETE LEAGUE ERROR:", err);
         return res.status(500).json({
             success: false,
             message: "Failed to delete league configuration",
