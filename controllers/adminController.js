@@ -8,12 +8,154 @@ export const listAdmins = async (req, res) => {
         const { data: admins, error } = await supabaseAdmin
             .from("users")
             .select("id, name, email, role, verification, created_at")
-            .in("role", ["admin", "superadmin"]);
+            .in("role", ["admin", "superadmin", "institutehead"]);
         if (error) throw error;
         res.json({ success: true, admins });
     } catch (err) {
-        console.error("FETCH ADMINS ERROR:", err);
         res.status(500).json({ message: "Failed to fetch admins" });
+    }
+};
+
+// GET /api/admin/institutes/pending
+export const getPendingInstitutes = async (req, res) => {
+    try {
+        const { data: institutes, error } = await supabaseAdmin
+            .from("users")
+            .select("id, first_name, last_name, name, institute_name, email, mobile, website, city, state, country, role, verification, created_at")
+            .eq("role", "institutehead")
+            .eq("verification", "pending");
+
+        if (error) throw error;
+
+        // Map data to match frontend expectations
+        const mappedData = institutes.map(inst => ({
+            id: inst.id,
+            first_name: inst.first_name,
+            last_name: inst.last_name,
+            organization_name: inst.institute_name || inst.name || `${inst.first_name || ''} ${inst.last_name || ''}`.trim() || 'Unknown Institute',
+            email: inst.email,
+            mobile: inst.mobile,
+            website: inst.website,
+            city: inst.city,
+            state: inst.state,
+            country: inst.country,
+            role: inst.role,
+            verification: inst.verification,
+            created_at: inst.created_at
+        }));
+
+        res.json({ success: true, data: mappedData });
+    } catch (err) {
+        console.error("FETCH PENDING INSTITUTES ERROR:", err);
+        res.status(500).json({ message: "Failed to fetch pending institutes" });
+    }
+};
+
+// GET /api/admin/institutes/imports/pending
+export const getPendingStudentImports = async (req, res) => {
+    try {
+        const { data: approvals, error } = await supabaseAdmin
+            .from("institute_approvals")
+            .select("id, institute_id, institute_name, student_count, is_approved, created_at")
+            .eq("is_approved", false)
+            .order("created_at", { ascending: false });
+
+        if (error) throw error;
+
+        res.json({ success: true, data: approvals });
+    } catch (err) {
+        console.error("FETCH PENDING STUDENT IMPORTS ERROR:", err);
+        res.status(500).json({ message: "Failed to fetch pending student import approvals" });
+    }
+};
+
+// PUT /api/admin/institutes/imports/:id/approve
+export const approveStudentImport = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // 1. Mark the bulk approval record as approved
+        const { data: approval, error: approvalError } = await supabaseAdmin
+            .from("institute_approvals")
+            .update({ is_approved: true })
+            .eq("id", id)
+            .select()
+            .single();
+
+        if (approvalError || !approval) throw approvalError || new Error("Approval record not found");
+
+        res.json({ success: true, message: "Bulk import request approved successfully. The Institute can now finalize the import." });
+    } catch (err) {
+        console.error("APPROVE STUDENT IMPORT ERROR:", err);
+        res.status(500).json({ message: "Failed to approve bulk student import" });
+    }
+};
+
+// GET /api/admin/institutes/verified
+export const getVerifiedInstitutes = async (req, res) => {
+    try {
+        const { data: institutes, error } = await supabaseAdmin
+            .from("users")
+            .select("id, first_name, last_name, name, institute_name, email, mobile, website, city, state, country, role, verification, created_at")
+            .eq("role", "institutehead")
+            .eq("verification", "verified");
+
+        if (error) throw error;
+
+        const mappedData = institutes.map(inst => ({
+            id: inst.id,
+            first_name: inst.first_name,
+            last_name: inst.last_name,
+            organization_name: inst.institute_name || inst.name || `${inst.first_name || ''} ${inst.last_name || ''}`.trim() || 'Unknown Institute',
+            email: inst.email,
+            mobile: inst.mobile,
+            website: inst.website,
+            city: inst.city,
+            state: inst.state,
+            country: inst.country,
+            role: inst.role,
+            verification: inst.verification,
+            created_at: inst.created_at
+        }));
+
+        res.json({ success: true, data: mappedData });
+    } catch (err) {
+        console.error("FETCH VERIFIED INSTITUTES ERROR:", err);
+        res.status(500).json({ message: "Failed to fetch verified institutes" });
+    }
+};
+
+// PUT /api/admin/institutes/:id/approve
+export const approveInstitute = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { error } = await supabaseAdmin
+            .from("users")
+            .update({ verification: "verified" })
+            .eq("id", id);
+
+        if (error) throw error;
+        res.json({ success: true, message: "Institute approved successfully" });
+    } catch (err) {
+        console.error("APPROVE INSTITUTE ERROR:", err);
+        res.status(500).json({ message: "Failed to approve institute" });
+    }
+};
+
+// PUT /api/admin/institutes/:id/reject
+export const rejectInstitute = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { error } = await supabaseAdmin
+            .from("users")
+            .update({ verification: "rejected" })
+            .eq("id", id);
+
+        if (error) throw error;
+        res.json({ success: true, message: "Institute rejected successfully" });
+    } catch (err) {
+        console.error("REJECT INSTITUTE ERROR:", err);
+        res.status(500).json({ message: "Failed to reject institute" });
     }
 };
 

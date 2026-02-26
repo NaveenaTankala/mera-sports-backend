@@ -12,7 +12,9 @@ import {
     sendVerificationOtp,
     verifyMobileRegistrationOtp,
     verifyRegistrationOtp,
-    verifyVerificationOtp
+    verifyVerificationOtp,
+    registerInstitute,
+    loginInstitute
 } from "../controllers/authController.js";
 
 const router = express.Router();
@@ -38,6 +40,10 @@ router.post("/login", loginPlayer);
 router.post("/register-admin", registerAdmin);
 router.post("/login-admin", loginAdmin);
 router.post("/reapply-google-admin", reapplyGoogleAdmin);
+
+/* ================= INSTITUTE HEAD AUTH ================= */
+router.post("/register-institute", registerInstitute);
+router.post("/login-institute", loginInstitute);
 
 /* ================= SESSION ================= */
 router.get("/me", getCurrentUser);

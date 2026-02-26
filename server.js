@@ -13,6 +13,7 @@ import leagueRoutes from "./routes/leagueRoutes.js";
 import matchRoutes from "./routes/matchRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js"; // Added Notification Routes Import
 import paymentRoutes from "./routes/paymentRoutes.js"; // Added Payment Routes
+import instituteRoutes from "./routes/instituteRoutes.js"; // Added Institute Routes
 import playerDashboardRoutes from "./routes/playerDashboardroutes.js";
 import publicRoutes from "./routes/publicRoutes.js";
 import teamRoutes from "./routes/teamRoutes.js";
@@ -39,6 +40,7 @@ app.use("/api/advertisements", advertisementRoutes);
 app.use("/api/apartments", apartmentRoutes);
 app.use("/api/teams", teamRoutes);
 app.use("/api/notifications", notificationRoutes); // Mounted Notification Routes
+app.use("/api/institute", instituteRoutes); // Institute endpoints
 app.use("/api/public", publicRoutes);
 app.use("/api/seed", tempSeedRoutes); // Seed routes (for testing only - remove in production)
 

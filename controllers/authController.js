@@ -378,7 +378,7 @@ export const loginPlayer = async (req, res) => {
 
         if (error || !user) return res.status(401).json({ message: "Invalid credentials" });
         if (user.role !== 'player') return res.status(403).json({ message: "This account is for Admins." });
-        
+
         // Plain text password comparison
         if (user.password !== password) return res.status(401).json({ message: "Invalid credentials" });
 
@@ -432,6 +432,142 @@ export const registerAdmin = async (req, res) => {
     }
 };
 
+export const registerInstitute = async (req, res) => {
+    try {
+        const { instituteName, email, contactNumber, website, address, password } = req.body || {};
+
+        // Basic validation
+        if (!instituteName || !email || !contactNumber || !password) {
+            return res.status(400).json({ message: "Missing required fields: Institute Name, Email, Contact Number, or Password" });
+        }
+
+        // Check for existing user with that email
+        const { data: existing, error: checkError } = await supabaseAdmin.from("users").select("id").eq("email", email).maybeSingle();
+
+        // 503 — Supabase unreachable (outage or network issue)
+        if (checkError) {
+            const isNetworkError = checkError.message?.includes("fetch failed") || checkError.message?.includes("network") || checkError.code === '';
+            if (isNetworkError) {
+                console.error("🔴 [RegisterInstitute] Supabase connection error:", checkError.message);
+                return res.status(503).json({ message: "Service temporarily unavailable. Please try again shortly." });
+            }
+        }
+
+        if (existing) return res.status(400).json({ message: "An account already exists with this email." });
+
+        const newUserId = crypto.randomUUID();
+
+        // Insert new user into the database
+        // Role: 'institutehead', verification: 'pending' — superadmin must approve
+        const { error: insertError } = await supabaseAdmin.from("users").insert({
+            id: newUserId,
+            name: instituteName,
+            institute_name: instituteName,
+            email: email,
+            mobile: contactNumber,
+            website: website || null,
+            password: password,
+            role: 'institutehead',
+            verification: 'pending',
+            apartment: address || null
+        });
+
+        if (insertError) {
+            const isNetworkError = insertError.message?.includes("fetch failed") || insertError.message?.includes("network") || insertError.code === '';
+            if (isNetworkError) {
+                console.error("🔴 [RegisterInstitute] Supabase insert failed — connection error:", insertError.message);
+                return res.status(503).json({ message: "Service temporarily unavailable. Please try again shortly." });
+            }
+            throw insertError;
+        }
+
+        res.json({ success: true, message: "Registration successful. Please wait for Superadmin approval." });
+
+    } catch (err) {
+        console.error("INSTITUTE REGISTER ERROR:", err);
+        res.status(500).json({ message: "Registration failed: " + err.message });
+    }
+};
+
+
+export const loginInstitute = async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        if (!email || !password) return res.status(400).json({ message: "Missing credentials" });
+
+        console.log("🔍 [LoginInstitute] Attempting login for email:", email);
+
+        const { data: user, error } = await supabaseAdmin.from("users").select("*").eq("email", email).maybeSingle();
+
+        // 503 — Supabase connection/network failure (not a user issue)
+        if (error) {
+            const isNetworkError = error.message?.includes("fetch failed") || error.message?.includes("network") || error.code === '';
+            if (isNetworkError) {
+                console.log("🔴 [LoginInstitute] SUPABASE CONNECTION ERROR — DB unreachable:", error.message);
+                return res.status(503).json({ message: "Service temporarily unavailable. Please try again shortly." });
+            }
+            console.log("❌ [LoginInstitute] STEP 1 FAILED — DB query error:", error.message);
+            return res.status(401).json({ message: "Invalid credentials" });
+        }
+
+        // 401 — email not found in DB
+        if (!user) {
+            console.log("❌ [LoginInstitute] STEP 1 FAILED — No user found with email:", email);
+            return res.status(401).json({ message: "Invalid credentials" });
+        }
+
+        console.log("✅ [LoginInstitute] STEP 1 PASSED — User found. role:", user.role, "| verification:", user.verification);
+
+        // 401 — role mismatch (not an institute account)
+        if (user.role !== 'institutehead') {
+            console.log("❌ [LoginInstitute] STEP 2 FAILED — Role mismatch. DB role is:", user.role, "| Expected: institutehead");
+            return res.status(401).json({ message: "Invalid credentials" });
+        }
+
+        console.log("✅ [LoginInstitute] STEP 2 PASSED — Role is institutehead");
+
+        // 401 — wrong password (plain text comparison, no hashing)
+        if (user.password !== password) {
+            console.log("❌ [LoginInstitute] STEP 3 FAILED — Password mismatch. DB password:", user.password, "| Received:", password);
+            return res.status(401).json({ message: "Invalid credentials" });
+        }
+
+        console.log("✅ [LoginInstitute] STEP 3 PASSED — Password matched");
+
+        // 403 — account has been rejected by superadmin
+        if (user.verification === 'rejected') {
+            return res.status(403).json({ success: false, code: 'INSTITUTE_REJECTED', message: "Your application has been rejected." });
+        }
+
+        // ✅ Always generate token for valid credentials (pending or verified)
+        // Frontend will check the 'status' field to block dashboard access if pending
+        const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: "30d" });
+
+        // Notify on verified login only
+        if (user.verification === 'verified') {
+            createNotification(user.id, "Welcome Back!", "Institute login successful.", "info");
+        }
+
+        console.log("✅ [LoginInstitute] LOGIN SUCCESS for:", email);
+
+        return res.status(200).json({
+            success: true,
+            token,
+            user: {
+                id: user.id,
+                instituteName: user.institute_name || user.name,
+                email: user.email,
+                role: user.role,
+                status: user.verification   // 'pending' | 'verified' | 'rejected'
+            },
+        });
+
+    } catch (err) {
+        console.error("INSTITUTE LOGIN ERROR:", err);
+        res.status(500).json({ message: "Server error during login" });
+    }
+};
+
 export const loginAdmin = async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -441,7 +577,7 @@ export const loginAdmin = async (req, res) => {
 
         if (error || !user) return res.status(401).json({ message: "Invalid credentials" });
         if (user.role !== 'admin' && user.role !== 'superadmin') return res.status(403).json({ message: "Access Denied." });
-        
+
         // Plain text password comparison
         if (user.password !== password) return res.status(401).json({ message: "Invalid credentials" });
 
