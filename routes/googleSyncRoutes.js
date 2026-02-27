@@ -136,17 +136,13 @@ router.post('/sync', async (req, res) => {
             finalUser = savedUser;
         }
 
-        // 4. VERIFICATION CHECK (Block Access if not verified)
-        if (finalUser.role === 'admin' && finalUser.verification !== 'verified') {
-            if (finalUser.verification === 'rejected') {
-                return res.status(403).json({
-                    error: "Your admin application has been rejected.",
-                    code: "ADMIN_REJECTED"
-                });
-            }
+        // 4. VERIFICATION CHECK — Block only rejected admins.
+        // Pending admins get a token so they can see the PendingApproval page
+        // and auto-redirect once approved (frontend handles the pending UI).
+        if (finalUser.role === 'admin' && finalUser.verification === 'rejected') {
             return res.status(403).json({
-                error: "Account pending approval from Super Admin.",
-                code: "ADMIN_PENDING"
+                error: "Your admin application has been rejected.",
+                code: "ADMIN_REJECTED"
             });
         }
 
@@ -159,7 +155,16 @@ router.post('/sync', async (req, res) => {
         );
 
         // 6. Return the user data AND token to frontend
-        res.json({ success: true, user: finalUser, token: backendToken });
+        // Include verification status so frontend can show PendingApproval when needed
+        const userPayload = {
+            id: finalUser.id,
+            name: finalUser.name,
+            email: finalUser.email,
+            role: finalUser.role,
+            avatar: finalUser.photos || finalUser.avatar,
+            verification: finalUser.verification
+        };
+        res.json({ success: true, user: userPayload, token: backendToken });
 
     } catch (error) {
         console.error('Server error:', error);

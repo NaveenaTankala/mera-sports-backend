@@ -1,0 +1,42 @@
+[2026-02-27T05:48:04.370Z] 🚀 Starting League Multi-Category Seeding Script...
+
+[2026-02-27T05:48:04.980Z] ✅ Using Super Admin: superadmin_1771237813367@merasports.com
+[2026-02-27T05:48:05.038Z] 
+📊 Total individual players needed: 132
+[2026-02-27T05:48:05.082Z] 
+👥 Ensuring at least 132 test players...
+[2026-02-27T05:48:05.215Z] ✅ Ready with 132 test players
+[2026-02-27T05:48:05.223Z] 
+📋 Creating Event...
+[2026-02-27T05:48:05.307Z] ✅ Event created: League Multi-Category Event 2026 (ID: 11)
+[2026-02-27T05:48:05.307Z] 
+🔹 Category: U-14 (Mixed) — 32 players [LEAGUE]
+[2026-02-27T05:48:05.491Z]    ✅ Category created: U-14 (id: 7055af24-91d9-4510-a630-5b2bd4c4edd2)
+[2026-02-27T05:48:07.815Z]    ✅ Registered 32/32 players
+[2026-02-27T05:48:07.817Z] 
+🔹 Category: U-17 (Mixed) — 40 players [LEAGUE]
+[2026-02-27T05:48:07.945Z]    ✅ Category created: U-17 (id: ac7ba5b4-6b94-4976-a15c-a36dbc669a45)
+[2026-02-27T05:48:10.846Z]    ✅ Registered 40/40 players
+[2026-02-27T05:48:10.847Z] 
+🔹 Category: Open (Mixed) — 60 players [LEAGUE]
+[2026-02-27T05:48:11.120Z]    ✅ Category created: Open (id: ed19eaf0-1d14-408b-86c2-efc26d27a9c0)
+[2026-02-27T05:48:15.245Z]    ✅ Registered 60/60 players
+[2026-02-27T05:48:15.246Z] 
+════════════════════════════════════════════════════════════
+[2026-02-27T05:48:15.247Z] 🎉 LEAGUE MULTI-CATEGORY SEEDING COMPLETE!
+[2026-02-27T05:48:15.248Z] ════════════════════════════════════════════════════════════
+[2026-02-27T05:48:15.249Z]   Event ID   : 11
+[2026-02-27T05:48:15.249Z]   Event Name : League Multi-Category Event 2026
+[2026-02-27T05:48:15.250Z]   Sport      : table tennis
+[2026-02-27T05:48:15.250Z] 
+[2026-02-27T05:48:15.251Z]   Categories:
+[2026-02-27T05:48:15.251Z]     1. U-14 (Mixed) — 32 players — LEAGUE — ₹500 — 32 registered
+[2026-02-27T05:48:15.252Z]     2. U-17 (Mixed) — 40 players — LEAGUE — ₹750 — 40 registered
+[2026-02-27T05:48:15.252Z]     3. Open (Mixed) — 60 players — LEAGUE — ₹1000 — 60 registered
+[2026-02-27T05:48:15.252Z] 
+[2026-02-27T05:48:15.253Z] 📌 Next steps:
+[2026-02-27T05:48:15.253Z]    1. Open the event in the admin dashboard
+[2026-02-27T05:48:15.254Z]    2. Go to League Tab
+[2026-02-27T05:48:15.254Z]    3. Select each category (e.g. "U-14 (Mixed) - Singles")
+[2026-02-27T05:48:15.254Z]    4. Distribute players into groups and generate matches
+[2026-02-27T05:48:15.255Z] ════════════════════════════════════════════════════════════

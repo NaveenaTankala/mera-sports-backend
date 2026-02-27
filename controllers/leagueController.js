@@ -126,6 +126,7 @@ export const saveLeagueConfig = async (req, res) => {
 
         // Clean and deduplicate participants
         // IMPORTANT: preserve group assignment (p.group) so group mode survives reloads
+        // Also preserve team league fields: isTeam, isBye, members, captainName, teamId
         const participantMap = new Map();
         participants.forEach((p) => {
             if (p && p.id && p.name) {
@@ -134,7 +135,14 @@ export const saveLeagueConfig = async (req, res) => {
                 const group = p.group || p.group_id || p.groupLabel || null;
                 // Only keep first occurrence if duplicate IDs exist
                 if (!participantMap.has(id)) {
-                    participantMap.set(id, { id, name, ...(group ? { group: String(group) } : {}) });
+                    const entry = { id, name, ...(group ? { group: String(group) } : {}) };
+                    // Preserve team league fields if present
+                    if (p.isTeam) entry.isTeam = true;
+                    if (p.isBye) entry.isBye = true;
+                    if (p.teamId) entry.teamId = String(p.teamId);
+                    if (p.captainName) entry.captainName = String(p.captainName);
+                    if (Array.isArray(p.members) && p.members.length > 0) entry.members = p.members;
+                    participantMap.set(id, entry);
                 }
             }
         });
@@ -161,10 +169,16 @@ export const saveLeagueConfig = async (req, res) => {
             draw: typeof rules?.draw === "number" ? rules.draw : (typeof rules?.pointsDraw === "number" ? rules.pointsDraw : defaultRules.pointsDraw),
             // Also preserve setsPerMatch if provided
             setsPerMatch: typeof rules?.setsPerMatch === "number" ? rules.setsPerMatch : defaultRules.setsPerMatch,
+            // Preserve winner mode (set_based, score_based, or match_based)
+            ...(rules?.winnerMode && ['set_based', 'score_based', 'match_based'].includes(rules.winnerMode) ? { winnerMode: rules.winnerMode } : {}),
+            // Preserve league mode (regular or team)
+            ...(rules?.leagueMode ? { leagueMode: String(rules.leagueMode) } : {}),
             // Keep backend format fields for backward compatibility
             pointsWin: typeof rules?.pointsWin === "number" ? rules.pointsWin : (typeof rules?.win === "number" ? rules.win : defaultRules.pointsWin),
             pointsLoss: typeof rules?.pointsLoss === "number" ? rules.pointsLoss : (typeof rules?.loss === "number" ? rules.loss : defaultRules.pointsLoss),
-            pointsDraw: typeof rules?.pointsDraw === "number" ? rules.pointsDraw : (typeof rules?.draw === "number" ? rules.draw : defaultRules.pointsDraw)
+            pointsDraw: typeof rules?.pointsDraw === "number" ? rules.pointsDraw : (typeof rules?.draw === "number" ? rules.draw : defaultRules.pointsDraw),
+            // Preserve team league definitions if provided
+            ...(Array.isArray(rules?.teams) && rules.teams.length > 0 ? { teams: rules.teams } : {})
         };
 
         // Determine category_id and category_label
