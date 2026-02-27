@@ -636,47 +636,94 @@ export const generateLeagueMatches = async (req, res) => {
         });
 
         // 3. Generate all unique pairs i < j within each group
+        // OR use customMatches from request body (for team league draws)
+        const customMatches = req.body && Array.isArray(req.body.customMatches) ? req.body.customMatches : null;
         const toInsert = [];
-        const groupsMap = new Map();
-        participants.forEach((p) => {
-            const rawGroup = p.group || p.group_id || p.groupLabel || null;
-            const groupKey = rawGroup ? String(rawGroup).trim().toUpperCase() : "A";
-            if (!groupsMap.has(groupKey)) groupsMap.set(groupKey, []);
-            groupsMap.get(groupKey).push(p);
-        });
 
-        for (const [groupKey, groupParticipants] of groupsMap.entries()) {
-            const n = groupParticipants.length;
-            for (let i = 0; i < n; i++) {
-                const p1 = groupParticipants[i];
-                const p1Id = p1 && p1.id;
-                if (!p1Id) continue;
+        if (customMatches && customMatches.length > 0) {
+            // Team League mode: use admin-configured match pairs
+            customMatches.forEach((cm) => {
+                const groupKey = cm.group || "A";
+                const pAId = String(cm.playerAId || cm.player_a_id || "");
+                const pBId = String(cm.playerBId || cm.player_b_id || "");
+                if (!pAId || !pBId) return;
 
-                for (let j = i + 1; j < n; j++) {
-                    const p2 = groupParticipants[j];
-                    const p2Id = p2 && p2.id;
-                    if (!p2Id) continue;
+                // Dedup check
+                const [id1, id2] = [pAId, pBId].sort();
+                const matchNum = cm.matchNumber || cm.match_number || 0;
+                const teamMatchupId = cm.teamMatchupId || "";
+                const key = `${groupKey}__${id1}__${id2}__${teamMatchupId}__${matchNum}`;
+                if (existingPairs.has(key)) return;
 
-                    const [id1, id2] = [String(p1Id), String(p2Id)].sort();
-                    const key = `${groupKey}__${id1}__${id2}`;
+                toInsert.push({
+                    event_id: eventId,
+                    category_id: matchCategoryId,
+                    bracket_id: placeholderBracketId,
+                    round_name: 'LEAGUE',
+                    player_a: {
+                        id: pAId,
+                        name: cm.playerAName || cm.player_a_name || pAId,
+                        group: groupKey,
+                        ...(cm.teamAId ? { teamId: cm.teamAId, teamName: cm.teamAName || "" } : {}),
+                        ...(teamMatchupId ? { teamMatchupId, matchNumber: matchNum } : {})
+                    },
+                    player_b: {
+                        id: pBId,
+                        name: cm.playerBName || cm.player_b_name || pBId,
+                        group: groupKey,
+                        ...(cm.teamBId ? { teamId: cm.teamBId, teamName: cm.teamBName || "" } : {}),
+                        ...(teamMatchupId ? { teamMatchupId, matchNumber: matchNum } : {})
+                    },
+                    status: 'SCHEDULED',
+                    score: null,
+                    winner: null
+                });
 
-                    if (existingPairs.has(key)) {
-                        continue; // Already have this pairing in this group
+                existingPairs.add(key);
+            });
+        } else {
+            // Normal League mode: auto-generate round-robin pairs
+            const groupsMap = new Map();
+            participants.forEach((p) => {
+                const rawGroup = p.group || p.group_id || p.groupLabel || null;
+                const groupKey = rawGroup ? String(rawGroup).trim().toUpperCase() : "A";
+                if (!groupsMap.has(groupKey)) groupsMap.set(groupKey, []);
+                groupsMap.get(groupKey).push(p);
+            });
+
+            for (const [groupKey, groupParticipants] of groupsMap.entries()) {
+                const n = groupParticipants.length;
+                for (let i = 0; i < n; i++) {
+                    const p1 = groupParticipants[i];
+                    const p1Id = p1 && p1.id;
+                    if (!p1Id) continue;
+
+                    for (let j = i + 1; j < n; j++) {
+                        const p2 = groupParticipants[j];
+                        const p2Id = p2 && p2.id;
+                        if (!p2Id) continue;
+
+                        const [id1, id2] = [String(p1Id), String(p2Id)].sort();
+                        const key = `${groupKey}__${id1}__${id2}`;
+
+                        if (existingPairs.has(key)) {
+                            continue;
+                        }
+
+                        toInsert.push({
+                            event_id: eventId,
+                            category_id: matchCategoryId,
+                            bracket_id: placeholderBracketId,
+                            round_name: 'LEAGUE',
+                            player_a: { id: String(p1Id), name: p1.name, group: groupKey },
+                            player_b: { id: String(p2Id), name: p2.name, group: groupKey },
+                            status: 'SCHEDULED',
+                            score: null,
+                            winner: null
+                        });
+
+                        existingPairs.add(key);
                     }
-
-                    toInsert.push({
-                        event_id: eventId,
-                        category_id: matchCategoryId,
-                        bracket_id: placeholderBracketId, // Use placeholder bracket (required by NOT NULL constraint)
-                        round_name: 'LEAGUE',
-                        player_a: { id: String(p1Id), name: p1.name, group: groupKey },
-                        player_b: { id: String(p2Id), name: p2.name, group: groupKey },
-                        status: 'SCHEDULED',
-                        score: null,
-                        winner: null
-                    });
-
-                    existingPairs.add(key);
                 }
             }
         }
@@ -1170,11 +1217,15 @@ export const updateMatchScore = async (req, res) => {
         
         if (status === 'COMPLETED' && !hasValidWinner) {
             const finalScore = score || currentMatch.score;
+            // Determine winnerMode: prefer explicit request body, then score payload, then bracket config
+            const requestWinnerMode = req.body?.winnerMode || finalScore?.winnerMode || null;
+            
             if (finalScore) {
                 // Check if score uses sets format
                 if (Array.isArray(finalScore.sets) && finalScore.sets.length > 0) {
-                    // Sets-based scoring - get setsPerMatch from bracket round's setsConfig
+                    // Sets-based scoring - get setsPerMatch and winnerMode from bracket round's setsConfig
                     let categorySetsPerMatch = 1; // Default to 1 if not configured
+                    let effectiveWinnerMode = requestWinnerMode || 'set_based';
                     try {
                         // Get from bracket round's setsConfig
                         if (currentMatch.round_name && currentMatch.bracket_id) {
@@ -1189,22 +1240,32 @@ export const updateMatchScore = async (req, res) => {
                             }
                             const rounds = bracketDataObj.rounds || [];
                             const round = rounds.find((r) => r && r.name === currentMatch.round_name);
-                            if (round && round.setsConfig && round.setsConfig.selectedSets) {
-                                categorySetsPerMatch = round.setsConfig.selectedSets;
+                            if (round && round.setsConfig) {
+                                if (round.setsConfig.selectedSets) {
+                                    categorySetsPerMatch = round.setsConfig.selectedSets;
+                                }
+                                // Read winnerMode from bracket setsConfig if not provided in request
+                                if (!requestWinnerMode && round.setsConfig.winnerMode) {
+                                    effectiveWinnerMode = round.setsConfig.winnerMode;
+                                }
                             }
                         }
                     } catch (err) {
                         console.error("Failed to fetch setsPerMatch from bracket round:", err);
                     }
 
-                    // Calculate winner based on best-of-N sets (score player1 = player_a, player2 = player_b)
+                    // Calculate set wins and total points
                     let player1SetsWon = 0;
                     let player2SetsWon = 0;
+                    let player1TotalPoints = 0;
+                    let player2TotalPoints = 0;
                     const setsToWin = Math.ceil(categorySetsPerMatch / 2);
 
                     for (const set of finalScore.sets) {
                         const p1Score = parseInt(set.player1 || 0);
                         const p2Score = parseInt(set.player2 || 0);
+                        player1TotalPoints += p1Score;
+                        player2TotalPoints += p2Score;
                         if (p1Score > p2Score) player1SetsWon++;
                         else if (p2Score > p1Score) player2SetsWon++;
                     }
@@ -1212,11 +1273,30 @@ export const updateMatchScore = async (req, res) => {
                     // Extract valid player ids (never use empty objects)
                     const winnerIdA = getPlayerId(effectivePlayerA);
                     const winnerIdB = getPlayerId(effectivePlayerB);
+                    const isLeagueMatch = String(currentMatch.round_name || '').trim().toUpperCase() === 'LEAGUE';
                     
                     if (!winnerIdA || !winnerIdB) {
                         console.warn(`Cannot compute winner for match ${matchId}: missing valid player_a or player_b. player_a:`, effectivePlayerA, 'player_b:', effectivePlayerB);
                         // Don't set winner if we can't determine it - let admin fix player_a/player_b first
+                    } else if (effectiveWinnerMode === 'score_based') {
+                        // Score-based: winner decided by total points across ALL sets
+                        // Tiebreak: player who won more sets
+                        if (player1TotalPoints > player2TotalPoints) {
+                            updatePayload.winner = winnerIdA;
+                        } else if (player2TotalPoints > player1TotalPoints) {
+                            updatePayload.winner = winnerIdB;
+                        } else {
+                            // Total points tied - use set wins as tiebreak
+                            if (player1SetsWon > player2SetsWon) {
+                                updatePayload.winner = winnerIdA;
+                            } else if (player2SetsWon > player1SetsWon) {
+                                updatePayload.winner = winnerIdB;
+                            } else {
+                                updatePayload.winner = isLeagueMatch ? null : winnerIdA;
+                            }
+                        }
                     } else {
+                        // Set-based (default): first to win majority of sets
                         if (player1SetsWon >= setsToWin) {
                             updatePayload.winner = winnerIdA;
                         } else if (player2SetsWon >= setsToWin) {
@@ -1227,7 +1307,6 @@ export const updateMatchScore = async (req, res) => {
                             } else if (player2SetsWon > player1SetsWon) {
                                 updatePayload.winner = winnerIdB;
                             } else {
-                                const isLeagueMatch = currentMatch.round_name === 'LEAGUE';
                                 updatePayload.winner = isLeagueMatch ? null : winnerIdA;
                             }
                         }

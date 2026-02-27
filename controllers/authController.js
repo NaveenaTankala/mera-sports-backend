@@ -445,12 +445,10 @@ export const loginAdmin = async (req, res) => {
         // Plain text password comparison
         if (user.password !== password) return res.status(401).json({ message: "Invalid credentials" });
 
-        // Verification Checks
-        if (user.role === 'admin' && user.verification !== 'verified') {
-            if (user.verification === 'rejected') {
-                return res.status(403).json({ success: false, code: 'ADMIN_REJECTED', message: "Application rejected." });
-            }
-            return res.status(403).json({ success: false, code: 'ADMIN_PENDING', message: "Pending approval." });
+        // Verification Checks — block only rejected admins
+        // Pending admins get a token so frontend can show PendingApproval page
+        if (user.role === 'admin' && user.verification === 'rejected') {
+            return res.status(403).json({ success: false, code: 'ADMIN_REJECTED', message: "Application rejected." });
         }
 
         // Admin tokens last 30 days for convenience (user can still logout manually)
@@ -462,7 +460,7 @@ export const loginAdmin = async (req, res) => {
         res.json({
             success: true,
             token,
-            user: { role: user.role, avatar: user.photos, verification: user.verification },
+            user: { id: user.id, name: user.name, email: user.email, role: user.role, avatar: user.photos, verification: user.verification },
         });
 
     } catch (err) {

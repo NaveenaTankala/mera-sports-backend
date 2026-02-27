@@ -116,8 +116,19 @@ export const getDashboardStats = async (req, res) => {
 // POST /api/admin/update-admin-role/:id
 export const updateAdminRole = async (req, res) => {
     try {
+        // Fetch the CURRENT role from DB (JWT token may have stale role after promotion)
+        const { data: currentUser, error: fetchError } = await supabaseAdmin
+            .from("users")
+            .select("role")
+            .eq("id", req.user.id)
+            .maybeSingle();
+
+        if (fetchError || !currentUser) {
+            return res.status(401).json({ message: "Could not verify your account" });
+        }
+
         // Only superadmins can update roles
-        if (req.user.role !== 'superadmin') {
+        if (currentUser.role !== 'superadmin') {
             return res.status(403).json({ message: "Only superadmins can update admin roles" });
         }
 
