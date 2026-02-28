@@ -16,7 +16,7 @@ export const generateMatchesFromBracket = async (req, res) => {
     const categoryLabel = (req.query && req.query.categoryLabel) || (req.body && req.body.categoryLabel);
     const roundName = (req.query && req.query.roundName) || (req.body && req.body.roundName); // Optional: generate for specific round only
     const setsPerMatch = req.body?.setsPerMatch; // Sets configuration from round (optional)
-    const winnerMode = req.body?.winnerMode || 'set_based'; // Winner mode: 'set_based' or 'score_based'
+    const winnerMode = req.body?.winnerMode || 'set_based'; // Winner mode: 'set_based', 'score_based', or 'match_based'
 
     try {
         // 1. Fetch Bracket Data with UUID-safe query
@@ -310,7 +310,7 @@ export const updateRoundSelectedSets = async (req, res) => {
         }
 
         // Save winnerMode if provided
-        if (winnerMode && (winnerMode === 'set_based' || winnerMode === 'score_based')) {
+        if (winnerMode && (winnerMode === 'set_based' || winnerMode === 'score_based' || winnerMode === 'match_based')) {
             rounds[roundIndex].setsConfig.winnerMode = winnerMode;
         }
 

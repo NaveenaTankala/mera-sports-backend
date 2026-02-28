@@ -3269,6 +3269,50 @@ export const recordResult = async (req, res) => {
         if (score) match.score = score;
         if (sets) match.sets = sets;
 
+        // ── Winner propagation to next round ──
+        // If the bracket match has winnerTo/winnerToSlot, propagate the winning
+        // player/team to the downstream match. Also supports legacy index-based
+        // propagation for older bracket structures.
+        try {
+            const rounds = bracketData.rounds || [];
+            const currentRoundIdx = rounds.findIndex(r => normalizeRoundName(r?.name) === normalizedRound);
+            const currentRoundMatches = rounds[currentRoundIdx]?.matches || [];
+            const matchIdx = currentRoundMatches.findIndex(m => m?.id === matchId);
+
+            // Determine the winning player/team object
+            const winnerPlayer = winner === "player1" ? match.player1 : match.player2;
+
+            if (winnerPlayer && currentRoundIdx >= 0 && matchIdx >= 0) {
+                let targetId = match.winnerTo != null ? String(match.winnerTo).trim() : null;
+                let targetSlot = match.winnerToSlot || null;
+
+                // Legacy fallback: derive from match index
+                if ((!targetId || !targetSlot) && currentRoundIdx < rounds.length - 1) {
+                    const nextRound = rounds[currentRoundIdx + 1];
+                    const nextMatchIdx = Math.floor(matchIdx / 2);
+                    const slot = (matchIdx % 2 === 0) ? "player1" : "player2";
+                    if (nextRound?.matches?.[nextMatchIdx]) {
+                        targetId = String(nextRound.matches[nextMatchIdx].id);
+                        targetSlot = slot;
+                    }
+                }
+
+                if (targetId && targetSlot) {
+                    // Find and update the downstream match
+                    for (const r of rounds) {
+                        for (const m of (r.matches || [])) {
+                            if (m && String(m.id).trim() === targetId) {
+                                m[targetSlot] = winnerPlayer;
+                                console.log(`[recordResult] Propagated winner to ${targetId} slot ${targetSlot}:`, typeof winnerPlayer === 'object' ? winnerPlayer.name || winnerPlayer.id : winnerPlayer);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (propErr) {
+            console.warn("[recordResult] Winner propagation failed (non-fatal):", propErr.message);
+        }
+
         const { data: updatedBracket, error: updateError } = await supabaseAdmin
             .from("event_brackets")
             .update({
