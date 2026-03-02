@@ -114,32 +114,62 @@ export const finalizeBulkImport = async (req, res) => {
             return res.status(400).json({ success: false, message: "The uploaded Excel sheet is empty." });
         }
 
-        // Prepare students data
-        const studentsToInsert = rawStudents.map((row) => {
-            const fName = String(row.first_name || row.FirstName || row.first_name || "").trim();
-            const lName = String(row.last_name || row.LastName || row.lastName || "").trim();
+        const successful = [];
+        const failed = [];
 
-            let parsedDob = row.dob || row.DoB || null;
+        // Process each student row individually
+        for (const row of rawStudents) {
+            const fName = String(row.first_name || row.FirstName || row["First Name"] || "").trim();
+            const lName = String(row.last_name || row.LastName || row["Last Name"] || "").trim();
+
+            // ── Parse Date of Birth ──────────────────────────────────────────
+            let parsedDob = row.dob || row.DoB || row["Date of Birth (DD-MM-YYYY)"] || row["Date of Birth"] || null;
+
             if (parsedDob instanceof Date) {
-                parsedDob = parsedDob.toISOString().split('T')[0];
+                parsedDob = parsedDob.toISOString().split('T')[0]; // ISO YYYY-MM-DD
             } else if (typeof parsedDob === "number") {
+                // Excel serial date fallback
                 const excelEpoch = new Date(Date.UTC(1899, 11, 30));
                 parsedDob = new Date(excelEpoch.getTime() + parsedDob * 86400000).toISOString().split('T')[0];
             } else if (typeof parsedDob === "string" && parsedDob.trim() !== "") {
-                const d = new Date(parsedDob);
-                parsedDob = !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : null;
+                // Handle DD-MM-YYYY string format from Excel column
+                const ddmmyyyy = parsedDob.trim().match(/^(\d{2})[-\/](\d{2})[-\/](\d{4})$/);
+                if (ddmmyyyy) {
+                    parsedDob = `${ddmmyyyy[3]}-${ddmmyyyy[2]}-${ddmmyyyy[1]}`; // → YYYY-MM-DD
+                } else {
+                    const d = new Date(parsedDob);
+                    parsedDob = !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : null;
+                }
             } else {
                 parsedDob = null;
             }
 
-            return {
+            // ── DOB Required to Generate Password ───────────────────────────
+            if (!parsedDob) {
+                failed.push({
+                    row: { first_name: fName, last_name: lName, email: row.email || row.Email || null },
+                    errorField: "dob",
+                    reason: "Date of Birth is required to generate password."
+                });
+                continue; // Skip this row, don't try to insert
+            }
+
+            // ── Derive password in DDMMYYYY format (matches manual registration) ──
+            // parsedDob is now YYYY-MM-DD
+            const [dobYear, dobMonth, dobDay] = parsedDob.split("-");
+            const password = `${dobDay}${dobMonth}${dobYear}`; // e.g. "15082005"
+
+            // ── Build the student object ────────────────────────────────────
+            const student = {
                 id: crypto.randomUUID(),
                 first_name: fName || null,
                 last_name: lName || null,
                 name: `${fName} ${lName}`.trim() || null,
                 email: row.email || row.Email || null,
                 mobile: row.mobile ? String(row.mobile).replace(/\D/g, '') : null,
-                aadhaar: row.aadhaar ? String(row.aadhaar).replace(/\D/g, '') : null,
+                aadhaar: row.aadhaar || row.Aadhaar || row["Aadhaar Number"]
+                    ? String(row.aadhaar || row.Aadhaar || row["Aadhaar Number"]).replace(/\D/g, '')
+                    : null,
                 dob: parsedDob,
                 gender: row.gender || row.Gender || null,
                 apartment: row.apartment || row.Apartment || null,
@@ -147,17 +177,13 @@ export const finalizeBulkImport = async (req, res) => {
                 state: row.state || row.State || null,
                 pincode: row.pincode ? String(row.pincode) : null,
                 country: row.country || row.Country || null,
+                password: password,        // Plain-text DDMMYYYY, same as manual registration
                 role: 'player',
-                verification: 'verified', // Natively verified since Superadmin approved it
+                verification: 'verified',  // Superadmin already pre-approved
                 institute_name: resolvedInstituteName
             };
-        });
 
-        const successful = [];
-        const failed = [];
-
-        // Insert students into users table individually to catch specific errors
-        for (const student of studentsToInsert) {
+            // ── Attempt DB Insert ───────────────────────────────────────────
             const { error: insertError } = await supabaseAdmin
                 .from("users")
                 .insert(student);
@@ -198,7 +224,7 @@ export const finalizeBulkImport = async (req, res) => {
                     email: student.email
                 });
             }
-        }
+        } // end of for (const row of rawStudents)
 
         // DELETE the approval record so they can't reuse it
         await supabaseAdmin
@@ -207,7 +233,7 @@ export const finalizeBulkImport = async (req, res) => {
             .eq("id", approval.id);
 
         return res.status(200).json({
-            success: true, // Returning true because the action technically completed ok
+            success: true,
             message: failed.length > 0
                 ? "Import finished. Some records require correction."
                 : "Import finished successfully.",
