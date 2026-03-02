@@ -2,7 +2,8 @@ import express from "express";
 import {
     requestBulkApproval,
     getApprovalStatus,
-    finalizeBulkImport
+    finalizeBulkImport,
+    getApprovedPlayers
 } from "../controllers/instituteController.js";
 import { verifyInstitute } from "../middleware/rbacMiddleware.js";
 
@@ -16,5 +17,8 @@ router.get("/approval-status", verifyInstitute, getApprovalStatus);
 
 // 3. POST /api/institute/bulk-import-finalize
 router.post("/bulk-import-finalize", verifyInstitute, finalizeBulkImport);
+
+// 4. GET /api/institute/approved-players
+router.get("/approved-players", verifyInstitute, getApprovedPlayers);
 
 export default router;
