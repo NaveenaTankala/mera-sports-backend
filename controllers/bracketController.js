@@ -1028,6 +1028,37 @@ export const createFullBracketStructure = async (req, res) => {
             }
         }
 
+        // STEP E: Propagate BYE winners from Round 1 to downstream rounds
+        // Without this, Round 2 matches have null players for slots fed by BYE matches.
+        // The frontend's handleFinalizeScores skips BYE matches (no scores to enter),
+        // so these winners must already be in bracket_data when matches are generated.
+        if (newRounds.length >= 2) {
+            const firstRound = newRounds[0];
+            for (const match of firstRound.matches) {
+                if (!match.winner || !match.winnerTo || !match.winnerToSlot) continue;
+                const hasP1 = match.player1 && typeof match.player1 === "object" && match.player1.id;
+                const hasP2 = match.player2 && typeof match.player2 === "object" && match.player2.id;
+                const isBye = (hasP1 && !hasP2) || (!hasP1 && hasP2);
+                if (!isBye) continue;
+
+                const winnerPlayer = match.winner === "player1" ? match.player1 : match.player2;
+                if (!winnerPlayer) continue;
+
+                const targetId = String(match.winnerTo).trim();
+                const targetSlot = match.winnerToSlot;
+
+                // Find target match across all downstream rounds
+                for (const round of newRounds) {
+                    for (const m of round.matches) {
+                        if (m && String(m.id).trim() === targetId) {
+                            m[targetSlot] = winnerPlayer;
+                            console.log(`[START ROUNDS] BYE winner propagated: ${match.id} → ${targetId}.${targetSlot}`);
+                        }
+                    }
+                }
+            }
+        }
+
         // FIRST: Delete all existing matches for this bracket BEFORE updating bracket_data
         // This prevents constraint violations when inserting new matches
         const { error: deleteError, count: deleteCount } = await supabaseAdmin
@@ -1704,17 +1735,36 @@ export const replaceRoundMatches = async (req, res) => {
         }
 
         const round = bracketData.rounds[roundIndex];
+        // Build a lookup of existing matches by id so we can preserve linkage fields
+        const existingMatchesMap = new Map();
+        for (const em of (round.matches || [])) {
+            if (em && em.id) existingMatchesMap.set(String(em.id).trim(), em);
+        }
         const existingMatchIds = (round.matches || []).map(m => m && m.id);
         const newMatches = incomingMatches.map((m, idx) => {
             const id = m && (m.id || existingMatchIds[idx]) || `R1-M${idx + 1}`;
             const player1 = m && m.player1 && !isFakeByePlayer(m.player1) ? m.player1 : null;
             const player2 = m && m.player2 && !isFakeByePlayer(m.player2) ? m.player2 : null;
+
+            // Preserve structural linkage fields from the existing bracket match.
+            // These fields (winnerTo, winnerToSlot, feederMatch1/2, roundName, matchNumber)
+            // are set during startRounds and must NOT be stripped when the frontend
+            // sends a REPLACE_ROUND request (e.g. player swaps, manual seeding).
+            const existing = existingMatchesMap.get(String(id).trim());
+
             return {
                 id,
                 player1: player1 || null,
                 player2: player2 || null,
                 winner: m && m.winner ? m.winner : null,
-                score: m && m.score ? m.score : null
+                score: m && m.score ? m.score : null,
+                // Linkage fields — prefer incoming values if present, else keep existing
+                winnerTo: (m && m.winnerTo) || (existing && existing.winnerTo) || null,
+                winnerToSlot: (m && m.winnerToSlot) || (existing && existing.winnerToSlot) || null,
+                feederMatch1: (m && m.feederMatch1) || (existing && existing.feederMatch1) || null,
+                feederMatch2: (m && m.feederMatch2) || (existing && existing.feederMatch2) || null,
+                roundName: (m && m.roundName) || (existing && existing.roundName) || null,
+                matchNumber: (m && m.matchNumber != null) ? m.matchNumber : (existing && existing.matchNumber != null ? existing.matchNumber : null),
             };
         });
 
@@ -2172,6 +2222,8 @@ export const addBracketRound = async (req, res) => {
                 matches: autoSeed ? Array.from({ length: nextMatchCount }, (_, idx) => {
                     const matchId = `R${nextRoundNum}-M${idx + 1}`;
                     const m = makeEmptyMatch(matchId);
+                    m.roundName = nextName;
+                    m.matchNumber = idx + 1;
                     // Add feeder linkage for winner propagation (matches finalizeRoundMatches logic)
                     const f1 = prevMatches[idx * 2];
                     const f2 = prevMatches[idx * 2 + 1];
