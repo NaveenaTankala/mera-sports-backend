@@ -7,6 +7,7 @@ import {
     getPendingInstitutes,
     getVerifiedInstitutes,
     getPendingStudentImports,
+    getApprovedStudentImports,
     approveStudentImport,
     approveInstitute,
     rejectInstitute,
@@ -45,6 +46,7 @@ router.get("/list-admins", verifyAdmin, listAdmins);
 router.get("/institutes/pending", verifyAdmin, getPendingInstitutes);
 router.get("/institutes/verified", verifyAdmin, getVerifiedInstitutes);
 router.get("/institutes/imports/pending", verifyAdmin, getPendingStudentImports);
+router.get("/institutes/imports/approved", verifyAdmin, getApprovedStudentImports);
 router.put("/institutes/imports/:id/approve", verifyAdmin, approveStudentImport);
 router.put("/institutes/:id/approve", verifyAdmin, approveInstitute);
 router.put("/institutes/:id/reject", verifyAdmin, rejectInstitute);

@@ -147,9 +147,9 @@ export const finalizeBulkImport = async (req, res) => {
             // ── DOB Required to Generate Password ───────────────────────────
             if (!parsedDob) {
                 failed.push({
-                    row: { first_name: fName, last_name: lName, email: row.email || row.Email || null },
+                    row: row,    // <--- THIS IS THE FIX. Pass the full unmutated row!
                     errorField: "dob",
-                    reason: "Date of Birth is required to generate password."
+                    reason: "Date of Birth is required to generate password or date format is invalid."
                 });
                 continue; // Skip this row, don't try to insert
             }
@@ -209,12 +209,7 @@ export const finalizeBulkImport = async (req, res) => {
                 }
 
                 failed.push({
-                    row: {
-                        first_name: student.first_name,
-                        email: student.email,
-                        mobile: student.mobile,
-                        aadhaar: student.aadhaar
-                    },
+                    row: row,
                     errorField: errorField,
                     reason: reason
                 });
@@ -245,5 +240,44 @@ export const finalizeBulkImport = async (req, res) => {
     } catch (err) {
         console.error("FINALIZE BULK IMPORT ERROR:", err);
         return res.status(500).json({ success: false, message: "Failed to finalize bulk import: " + err.message });
+    }
+};
+
+// 4. GET /api/institute/approved-players
+export const getApprovedPlayers = async (req, res) => {
+    try {
+        const { id: institute_id } = req.user;
+
+        // Fetch institute name
+        const { data: institute, error: instError } = await supabaseAdmin
+            .from("users")
+            .select("name, institute_name")
+            .eq("id", institute_id)
+            .single();
+
+        if (instError || !institute) {
+            return res.status(404).json({ success: false, message: "Institute not found." });
+        }
+
+        const resolvedInstituteName = institute.institute_name || institute.name || "Unknown Institute";
+
+        // Query the database to find all players belonging to this institute_name
+        const { data: players, error } = await supabaseAdmin
+            .from("users")
+            .select("first_name, last_name, dob, gender, mobile, email, aadhaar")
+            .eq("institute_name", resolvedInstituteName)
+            .eq("role", "player")
+            .order("created_at", { ascending: false });
+
+        if (error) throw error;
+
+        return res.status(200).json({
+            success: true,
+            players: players || []
+        });
+
+    } catch (err) {
+        console.error("GET APPROVED PLAYERS ERROR:", err);
+        return res.status(500).json({ success: false, message: "Failed to retrieve approved players" });
     }
 };

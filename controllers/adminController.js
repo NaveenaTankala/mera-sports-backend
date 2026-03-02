@@ -69,6 +69,24 @@ export const getPendingStudentImports = async (req, res) => {
     }
 };
 
+// GET /api/admin/institutes/imports/approved
+export const getApprovedStudentImports = async (req, res) => {
+    try {
+        const { data: approvals, error } = await supabaseAdmin
+            .from("institute_approvals")
+            .select("id, institute_id, institute_name, student_count, is_approved, created_at")
+            .eq("is_approved", true)
+            .order("created_at", { ascending: false });
+
+        if (error) throw error;
+
+        res.json({ success: true, data: approvals });
+    } catch (err) {
+        console.error("FETCH APPROVED STUDENT IMPORTS ERROR:", err);
+        res.status(500).json({ message: "Failed to fetch approved student import approvals" });
+    }
+};
+
 // PUT /api/admin/institutes/imports/:id/approve
 export const approveStudentImport = async (req, res) => {
     try {
