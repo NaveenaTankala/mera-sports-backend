@@ -4,6 +4,12 @@ import {
     deleteAdmin,
     getDashboardStats,
     listAdmins,
+    getPendingInstitutes,
+    getVerifiedInstitutes,
+    getPendingStudentImports,
+    approveStudentImport,
+    approveInstitute,
+    rejectInstitute,
     rejectAdmin,
     updateAdminRole,
     uploadAsset
@@ -36,6 +42,12 @@ const router = express.Router();
 
 /* ================= ADMIN MANAGEMENT ================= */
 router.get("/list-admins", verifyAdmin, listAdmins);
+router.get("/institutes/pending", verifyAdmin, getPendingInstitutes);
+router.get("/institutes/verified", verifyAdmin, getVerifiedInstitutes);
+router.get("/institutes/imports/pending", verifyAdmin, getPendingStudentImports);
+router.put("/institutes/imports/:id/approve", verifyAdmin, approveStudentImport);
+router.put("/institutes/:id/approve", verifyAdmin, approveInstitute);
+router.put("/institutes/:id/reject", verifyAdmin, rejectInstitute);
 router.post("/approve-admin/:id", verifyAdmin, approveAdmin);
 router.post("/reject-admin/:id", verifyAdmin, rejectAdmin);
 router.post("/update-admin-role/:id", verifyAdmin, updateAdminRole);
