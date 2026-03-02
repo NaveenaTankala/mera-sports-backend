@@ -1827,9 +1827,44 @@ export const finalizeRoundMatches = async (req, res) => {
 
                 const integrity = validateBracketIntegrity(bracketDataObj);
                 if (!integrity.valid) {
-                    console.warn("Bracket integrity check failed before propagation:", integrity.errors);
-                    // Skip propagation to avoid Semifinal wrong mapping; scores are still saved
-                } else {
+                    // AUTO-REPAIR: Reconstruct missing winnerTo/winnerToSlot linkage.
+                    // Old brackets (created before linkage was added) may lack these fields.
+                    // Without them, winner propagation to the next round is impossible.
+                    let repaired = false;
+                    const roundCount = rounds.length;
+                    for (let rIdx = 0; rIdx < roundCount - 1; rIdx++) {
+                        const round = rounds[rIdx];
+                        const matches = Array.isArray(round?.matches) ? round.matches : [];
+                        for (let mIdx = 0; mIdx < matches.length; mIdx++) {
+                            const m = matches[mIdx];
+                            if (!m) continue;
+                            if (m.winnerTo == null || m.winnerToSlot == null) {
+                                // matchNumber is 1-based (mIdx is 0-based)
+                                const matchNum = mIdx + 1;
+                                const nextRoundIndex = rIdx + 1;
+                                const nextMatchNumber = Math.ceil(matchNum / 2);
+                                m.winnerTo = `R${nextRoundIndex + 1}-M${nextMatchNumber}`;
+                                m.winnerToSlot = matchNum % 2 === 1 ? "player1" : "player2";
+                                repaired = true;
+                            }
+                        }
+                    }
+                    if (repaired) {
+                        console.log("[Finalize] Auto-repaired missing winnerTo/winnerToSlot in bracket_data");
+                        // Re-validate after repair
+                        const recheck = validateBracketIntegrity(bracketDataObj);
+                        if (!recheck.valid) {
+                            console.warn("Bracket integrity still invalid after repair:", recheck.errors);
+                            // Skip propagation to avoid wrong mapping; scores are still saved
+                        }
+                    }
+                    if (!repaired) {
+                        console.warn("Bracket integrity check failed before propagation:", integrity.errors);
+                        // Skip propagation to avoid Semifinal wrong mapping; scores are still saved
+                    }
+                }
+                // Proceed with propagation if integrity is valid (either originally or after repair)
+                if (validateBracketIntegrity(bracketDataObj).valid) {
 
                 const matchIndexById = new Map();
                 const roundIndexByName = new Map();
@@ -1960,6 +1995,89 @@ export const finalizeRoundMatches = async (req, res) => {
                         });
                     }
                     downstreamUpdates.get(targetKey)[dbTargetSlot] = winnerPlayer;
+                }
+
+                // ── BYE winner propagation ──
+                // The frontend skips BYE matches when finalizing (no scores to enter),
+                // so their winners are never in the `updates` array above. We must
+                // propagate them here for the current round so that downstream matches
+                // (e.g., Quarterfinal) get BOTH feeder players.
+                const normalizedFinalizingRound = normalizeRoundName(roundName);
+                const finalizingRoundIdx = roundIndexByName.has(normalizedFinalizingRound)
+                    ? roundIndexByName.get(normalizedFinalizingRound)
+                    : rounds.findIndex(r => r && normalizeRoundName(r.name) === normalizedFinalizingRound);
+
+                if (finalizingRoundIdx >= 0 && finalizingRoundIdx < rounds.length) {
+                    const currentRoundObj = rounds[finalizingRoundIdx];
+                    const currentRoundMatches = Array.isArray(currentRoundObj.matches) ? currentRoundObj.matches : [];
+
+                    // Set of bracket_match_ids already processed in the normal propagation loop above
+                    const alreadyPropagatedIds = new Set();
+                    for (const update of updates) {
+                        const em = existingMatches.find(m => m.id === update.id);
+                        if (em && em.bracket_match_id) alreadyPropagatedIds.add(String(em.bracket_match_id).trim());
+                    }
+
+                    for (let mIdx = 0; mIdx < currentRoundMatches.length; mIdx++) {
+                        const bracketMatch = currentRoundMatches[mIdx];
+                        if (!bracketMatch) continue;
+                        const bmId = String(bracketMatch.id || "").trim();
+                        if (alreadyPropagatedIds.has(bmId)) continue; // already handled
+
+                        // Detect BYE: one real player, one empty
+                        const hasP1 = bracketMatch.player1 && typeof bracketMatch.player1 === 'object' && (bracketMatch.player1.id || bracketMatch.player1.player_id);
+                        const hasP2 = bracketMatch.player2 && typeof bracketMatch.player2 === 'object' && (bracketMatch.player2.id || bracketMatch.player2.player_id);
+                        const isBye = (hasP1 && !hasP2) || (!hasP1 && hasP2);
+                        if (!isBye) continue;
+
+                        const winnerPlayer = hasP1 ? bracketMatch.player1 : bracketMatch.player2;
+                        const winnerSide = hasP1 ? "player1" : "player2";
+
+                        // Mark winner on the bracket node if not already set
+                        if (!bracketMatch.winner) {
+                            bracketMatch.winner = winnerSide;
+                        }
+
+                        // Find downstream target
+                        let targetId = bracketMatch.winnerTo != null ? String(bracketMatch.winnerTo).trim() : null;
+                        let targetSlot = bracketMatch.winnerToSlot || null;
+
+                        // Legacy fallback: derive from index
+                        if ((!targetId || !targetSlot) && (finalizingRoundIdx < rounds.length - 1)) {
+                            const nextRoundIndex = finalizingRoundIdx + 1;
+                            const nextMatchIndex = Math.floor(mIdx / 2);
+                            const slot = (mIdx % 2 === 0) ? "player1" : "player2";
+                            const downRound = rounds[nextRoundIndex];
+                            if (downRound?.matches?.[nextMatchIndex]?.id) {
+                                targetId = String(downRound.matches[nextMatchIndex].id);
+                                targetSlot = slot;
+                            }
+                        }
+
+                        if (!targetId || !targetSlot) continue;
+
+                        const downstreamLoc = matchIndexById.get(String(targetId));
+                        if (!downstreamLoc) continue;
+
+                        const downstreamRound = rounds[downstreamLoc.roundIndex];
+                        if (!downstreamRound || !Array.isArray(downstreamRound.matches)) continue;
+                        const downstreamMatch = downstreamRound.matches[downstreamLoc.matchIndex];
+                        if (!downstreamMatch) continue;
+
+                        downstreamMatch[targetSlot] = winnerPlayer;
+                        console.log(`[Finalize] BYE winner propagated: ${bmId} → ${targetId}.${targetSlot}`);
+
+                        const dbTargetSlot = (targetSlot === 'player1') ? 'player_a' : 'player_b';
+                        const targetKey = String(targetId);
+                        if (!downstreamUpdates.has(targetKey)) {
+                            downstreamUpdates.set(targetKey, {
+                                bracket_id: bracket.id,
+                                bracket_match_id: targetKey,
+                                updated_at: new Date().toISOString()
+                            });
+                        }
+                        downstreamUpdates.get(targetKey)[dbTargetSlot] = winnerPlayer;
+                    }
                 }
 
                 // Perform bulk update for downstream matches
