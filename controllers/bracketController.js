@@ -1347,6 +1347,7 @@ export const updateBracketMatch = async (req, res) => {
             matchId,
             player1,
             player2,
+            winner: bodyWinner,
             matchIndex,
             deleteMatch,
             updatePlayerRanks,
@@ -1654,10 +1655,56 @@ export const updateBracketMatch = async (req, res) => {
             if (player1 !== undefined) match.player1 = safeP1;
             if (player2 !== undefined) match.player2 = safeP2;
 
-            // If a player is cleared/changed, clear winner to avoid stale results
+            // If a player is cleared/changed, clear winner to avoid stale results.
+            // Also honour explicit bodyWinner===null from frontend (race-condition guard:
+            // the frontend detected a BYE→non-BYE transition even if bracket_data on the
+            // server hasn't recorded the BYE winner yet due to a concurrent recordResult).
             // NOTE: Scores are NOT stored in bracket_data - they belong in matches table only
-            if (match.winner) {
+            const shouldClearWinner = !!match.winner || (bodyWinner === null && 'winner' in req.body);
+            if (shouldClearWinner) {
                 match.winner = null;
+
+                // CRITICAL: Also clear the stale winner in the `matches` DB table.
+                // When a BYE match (1 player) had its winner auto-set via recordResult,
+                // the matches table got winner="A" + status="COMPLETED". When the second
+                // player is placed (making it a non-BYE), we clear bracket_data.winner
+                // above, but we must also reset the DB match row so that displayWinner
+                // in BracketBuilder doesn't read a stale winner from dbMatch.
+                const bracketMatchId = matchId || match.id;
+                if (bracketMatchId) {
+                    try {
+                        await supabaseAdmin
+                            .from("matches")
+                            .update({
+                                winner: null,
+                                status: "SCHEDULED",
+                                score: null,
+                                updated_at: new Date().toISOString()
+                            })
+                            .eq("bracket_match_id", String(bracketMatchId).trim())
+                            .eq("event_id", eventId);
+                    } catch (clearErr) {
+                        console.warn("[updateBracketMatch] Failed to clear stale winner in matches table:", clearErr.message);
+                    }
+                }
+            }
+        }
+
+        // Sync player_a / player_b in the matches table so DB matches stay current
+        // with whatever the admin placed in the bracket structure.
+        const bracketMatchIdForSync = matchId || (round.matches[foundMatchIndex] && round.matches[foundMatchIndex].id);
+        if (bracketMatchIdForSync && (player1 !== undefined || player2 !== undefined)) {
+            try {
+                const syncPayload = { updated_at: new Date().toISOString() };
+                if (player1 !== undefined) syncPayload.player_a = player1 && !isFakeByePlayer(player1) ? player1 : null;
+                if (player2 !== undefined) syncPayload.player_b = player2 && !isFakeByePlayer(player2) ? player2 : null;
+                await supabaseAdmin
+                    .from("matches")
+                    .update(syncPayload)
+                    .eq("bracket_match_id", String(bracketMatchIdForSync).trim())
+                    .eq("event_id", eventId);
+            } catch (syncErr) {
+                console.warn("[updateBracketMatch] Failed to sync players in matches table:", syncErr.message);
             }
         }
 

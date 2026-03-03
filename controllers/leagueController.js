@@ -60,7 +60,7 @@ export const getLeagueConfig = async (req, res) => {
 
         if (!data) {
             // No config yet - return sensible defaults
-            console.log(`ℹ️ No league config found for eventId=${eventId}, categoryId=${categoryId}. Returning defaults.`);
+            //console.log(`ℹ️ No league config found for eventId=${eventId}, categoryId=${categoryId}. Returning defaults.`);
             return res.json({
                 success: true,
                 league: {
@@ -178,7 +178,11 @@ export const saveLeagueConfig = async (req, res) => {
             pointsLoss: typeof rules?.pointsLoss === "number" ? rules.pointsLoss : (typeof rules?.loss === "number" ? rules.loss : defaultRules.pointsLoss),
             pointsDraw: typeof rules?.pointsDraw === "number" ? rules.pointsDraw : (typeof rules?.draw === "number" ? rules.draw : defaultRules.pointsDraw),
             // Preserve team league definitions if provided
-            ...(Array.isArray(rules?.teams) && rules.teams.length > 0 ? { teams: rules.teams } : {})
+            ...(Array.isArray(rules?.teams) && rules.teams.length > 0 ? { teams: rules.teams } : {}),
+            // Preserve directKnockout flag (teams sent straight to knockout, no league rounds)
+            ...(rules?.directKnockout === true ? { directKnockout: true } : {}),
+            // Preserve player ranks assigned by admin in league tab
+            ...(rules?.playerRanks && typeof rules.playerRanks === 'object' && Object.keys(rules.playerRanks).length > 0 ? { playerRanks: rules.playerRanks } : {})
         };
 
         // Determine category_id and category_label
