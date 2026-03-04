@@ -1,0 +1,49 @@
+[2026-03-03T04:28:49.066Z] 🚀 Starting Doubles League seeding script...
+
+[2026-03-03T04:28:49.073Z] 
+🔍 Looking for event: "Team League Test Event 2026"...
+[2026-03-03T04:28:49.890Z] ✅ Found event: Team League Test Event 2026 (ID: 10)
+[2026-03-03T04:28:49.894Z]    Existing categories: 1
+[2026-03-03T04:28:49.898Z] 
+📋 Adding 3 Doubles League categories to event...
+[2026-03-03T04:28:49.975Z]   ✅ Added: Men's Doubles League (Male) — Doubles [LEAGUE]
+[2026-03-03T04:28:49.993Z]   ✅ Added: Mixed Doubles League (Mixed) — Doubles [LEAGUE]
+[2026-03-03T04:28:49.994Z]   ✅ Added: Women's Doubles League (Female) — Doubles [LEAGUE]
+[2026-03-03T04:28:49.995Z] ✅ Event now has 4 categories total
+[2026-03-03T04:28:49.996Z] 
+📊 Total: 68 pairs → 136 players needed
+[2026-03-03T04:28:49.996Z] 
+👥 Ensuring at least 136 test players exist...
+[2026-03-03T04:28:50.189Z]   Found 136 existing test players
+[2026-03-03T04:28:50.191Z] ✅ 136 test players ready
+[2026-03-03T04:28:50.193Z] 
+🏓 Registering 21 doubles pairs for Men's Doubles League (Male)...
+[2026-03-03T04:28:53.280Z]   ✅ Registered 21/21 pairs for Men's Doubles League (Male)
+[2026-03-03T04:28:53.281Z] 
+🏓 Registering 32 doubles pairs for Mixed Doubles League (Mixed)...
+[2026-03-03T04:28:56.980Z]   ✅ Registered 32/32 pairs for Mixed Doubles League (Mixed)
+[2026-03-03T04:28:56.981Z] 
+🏓 Registering 15 doubles pairs for Women's Doubles League (Female)...
+[2026-03-03T04:28:58.762Z]   ✅ Registered 15/15 pairs for Women's Doubles League (Female)
+[2026-03-03T04:28:58.763Z] 
+════════════════════════════════════════════════════════════
+[2026-03-03T04:28:58.764Z] 🎉 DOUBLES LEAGUE SEEDING COMPLETE!
+[2026-03-03T04:28:58.764Z] ════════════════════════════════════════════════════════════
+[2026-03-03T04:28:58.764Z]   Event ID   : 10
+[2026-03-03T04:28:58.764Z]   Event Name : Team League Test Event 2026
+[2026-03-03T04:28:58.765Z] 
+[2026-03-03T04:28:58.765Z]   New categories added:
+[2026-03-03T04:28:58.765Z]     1. Men's Doubles League (Male) — 21 pairs → 21 registered, 0 failed
+[2026-03-03T04:28:58.766Z]     2. Mixed Doubles League (Mixed) — 32 pairs → 32 registered, 0 failed
+[2026-03-03T04:28:58.766Z]     3. Women's Doubles League (Female) — 15 pairs → 15 registered, 0 failed
+[2026-03-03T04:28:58.766Z] 
+[2026-03-03T04:28:58.767Z]   Total players used : 136
+[2026-03-03T04:28:58.767Z]   Total pairs        : 68
+[2026-03-03T04:28:58.767Z]   Total registered   : 68
+[2026-03-03T04:28:58.768Z] 
+[2026-03-03T04:28:58.768Z] 📌 Next steps:
+[2026-03-03T04:28:58.769Z]    1. Open the event in the admin dashboard
+[2026-03-03T04:28:58.770Z]    2. You should see 4 categories now (1 Team League + 3 Doubles League)
+[2026-03-03T04:28:58.771Z]    3. Go to League Tab → select a Doubles category
+[2026-03-03T04:28:58.772Z]    4. Distribute pairs into groups and generate round-robin matches
+[2026-03-03T04:28:58.772Z] ════════════════════════════════════════════════════════════

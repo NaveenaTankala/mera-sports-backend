@@ -1,6 +1,9 @@
 import crypto from "crypto";
 import { supabaseAdmin } from "../config/supabaseClient.js";
 
+// Per-type limits
+const MAX_VIDEO_SIZE = 6 * 1024 * 1024;   // 6 MB per video
+const MAX_IMAGE_SIZE = 4 * 1024 * 1024;   // 4 MB per image
 // 10 MB total storage cap per user
 const MAX_STORAGE_PER_USER = 10 * 1024 * 1024; // 10 MB in bytes
 
@@ -17,11 +20,15 @@ export const uploadMedia = async (req, res) => {
     const playerId = req.user.id;
     const fileType = file.mimetype.startsWith("video/") ? "video" : "image";
 
-    // Validate single-file size: reject if file alone exceeds total limit
-    if (file.size > MAX_STORAGE_PER_USER) {
+    // Per-type size validation
+    const maxForType = fileType === "video" ? MAX_VIDEO_SIZE : MAX_IMAGE_SIZE;
+    const limitLabel = fileType === "video" ? "6 MB" : "4 MB";
+    if (file.size > maxForType) {
+      const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
       return res.status(400).json({
         success: false,
-        message: `File too large. Max 10MB total storage allowed.`,
+        message: `${fileType === "video" ? "Video" : "Image"} too large (${sizeMB} MB). Maximum allowed is ${limitLabel}.`,
+        code: "FILE_TOO_LARGE",
       });
     }
 
