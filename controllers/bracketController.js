@@ -280,21 +280,39 @@ export const getCategoryDraw = async (req, res) => {
         let { data, error } = await query.order("created_at", { ascending: true });
 
         // If no exact match and categoryLabel provided, try partial matching
+        // IMPORTANT: Only match when the base category name matches the START of the stored
+        // category label, to avoid cross-category contamination (e.g., "U-1" matching "U-14")
         if ((!data || data.length === 0) && categoryLabel && !categoryId) {
-            // Try to find brackets where category contains parts of the label
             const labelParts = categoryLabel.split(" - ").filter(p => p.trim());
             if (labelParts.length > 0) {
                 const baseCategory = labelParts[0]; // e.g., "U-11 (Male)" or "U-11"
+                // Use prefix match (baseCategory%) instead of substring match (%baseCategory%)
+                // to prevent "U-1" from matching "U-14", "U-17", etc.
                 const { data: partialData, error: partialError } = await supabaseAdmin
                     .from("event_brackets")
                     .select("*")
                     .eq("event_id", eventId)
-                    .ilike("category", `%${baseCategory}%`)
+                    .ilike("category", `${baseCategory}%`)
                     .order("created_at", { ascending: true });
 
                 if (!partialError && partialData && partialData.length > 0) {
-                    data = partialData;
-                    error = null;
+                    // If multiple results, try to find the one that best matches the full label
+                    if (partialData.length === 1) {
+                        data = partialData;
+                        error = null;
+                    } else {
+                        // Multiple partial matches — only use if we can narrow down to exactly one
+                        // by comparing more label parts (gender, matchType)
+                        const exactishMatch = partialData.filter(row => {
+                            const storedLabel = (row.category || "").toLowerCase();
+                            return labelParts.every(part => storedLabel.includes(part.toLowerCase()));
+                        });
+                        if (exactishMatch.length > 0) {
+                            data = exactishMatch;
+                            error = null;
+                        }
+                        // If still ambiguous, don't use partial match to avoid cross-category contamination
+                    }
                 }
             }
         }
@@ -437,8 +455,18 @@ export const initBracket = async (req, res) => {
             rounds: [],
             players: (incomingPlayers && Array.isArray(incomingPlayers)) ? incomingPlayers : (incomingBracketData?.players || []),
             ...(incomingBracketData && typeof incomingBracketData === "object" ? incomingBracketData : {}),
-            ...(createdFrom ? { createdFrom } : {})
+            ...(createdFrom ? { createdFrom } : {}),
+            // Store the frontend category ID for traceability (even if not a UUID)
+            // This helps debug cross-category contamination issues
+            ...(categoryId ? { sourceCategoryId: String(categoryId) } : {}),
         };
+
+        // Also store body-level categoryId if params categoryId is not UUID
+        // The body may also carry a categoryId (from useLeagueBracketGeneration),
+        // which we record in bracket_data for cross-ref.
+        if (req.body?.categoryId && !isUuid(categoryId)) {
+            bracketData.sourceCategoryId = String(req.body.categoryId);
+        }
 
         const insertData = {
             event_id: eventId,
@@ -3347,9 +3375,23 @@ export const recordResult = async (req, res) => {
             return res.status(404).json({ message: `Match "${matchId}" not found` });
         }
 
+        // Determine winner player object and extract actual player UUID.
+        // CRITICAL: Store the real player UUID instead of "A"/"B" to avoid
+        // semantic ambiguity. "A"/"B" was historically interpreted as
+        // "DB player_a/player_b" by some frontend code but actually meant
+        // "bracket player1/player2" here, causing cross-contamination bugs.
+        const winnerPlayer = winner === "player1" ? match.player1 : match.player2;
+        const getPlayerId = (p) => {
+            if (!p) return null;
+            if (typeof p === "string") return p;
+            return p.id || p.player_id || p.playerId || null;
+        };
+        const winnerPlayerId = getPlayerId(winnerPlayer);
+
         // Update matches table (authoritative)
+        // Prefer actual UUID; fall back to "A"/"B" only if player id is missing.
         const matchesUpdate = {
-            winner: winner === "player1" ? "A" : "B",
+            winner: winnerPlayerId || (winner === "player1" ? "A" : "B"),
             score: score,
             sets: sets,
             status: "COMPLETED",
