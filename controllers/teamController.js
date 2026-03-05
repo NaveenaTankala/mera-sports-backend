@@ -159,6 +159,25 @@ export const deleteTeam = async (req, res) => {
         if (fetchError || !team) return res.status(404).json({ message: "Team not found" });
         if (team.captain_id !== userId) return res.status(403).json({ message: "Unauthorized" });
 
+        // Block deletion if team has active event registrations
+        const activeStatuses = [
+            'pending_verification', 'payment_pending', 'registered',
+            'pending', 'Submitted', 'confirmed', 'verified', 'approved', 'paid'
+        ];
+        const { data: activeRegs } = await supabaseAdmin
+            .from('event_registrations')
+            .select('id')
+            .eq('team_id', id)
+            .in('status', activeStatuses)
+            .limit(1);
+
+        if (activeRegs?.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cannot delete team while it is registered for an active event.'
+            });
+        }
+
         const { error } = await supabaseAdmin.from('player_teams').delete().eq('id', id);
         if (error) throw error;
         res.json({ success: true, message: "Team deleted successfully" });
