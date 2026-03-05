@@ -1510,12 +1510,13 @@ export const finalizeRoundMatches = async (req, res) => {
 
         // Process all matches in a transaction-like manner
         const updates = [];
+        const skippedMatches = []; // Track matches skipped due to missing players
         for (const matchData of matches) {
             const existingMatch = existingMatches.find(m => m.id === matchData.matchId);
             if (!existingMatch) continue;
 
             // CRITICAL: Use bracket to fill player_a/player_b when empty so winner can be computed and stored correctly.
-            // If bracket lookup fails, try fetching bracket again for this specific match.
+            // Bracket data is cached per bracket_id to avoid redundant DB fetches.
             let effectivePlayerA = existingMatch.player_a;
             let effectivePlayerB = existingMatch.player_b;
             let bracketDataForMatch = bracketDataObjForFinalize;
@@ -1526,8 +1527,8 @@ export const finalizeRoundMatches = async (req, res) => {
             
             // If players are missing, try to get from bracket
             if ((!hasValidA || !hasValidB) && existingMatch.bracket_id && existingMatch.bracket_match_id) {
-                // Always try to fetch bracket if we don't have it or if lookup failed
-                if (!bracketDataForMatch || (!effectivePlayerA || !effectivePlayerB)) {
+                // Only fetch bracket if we don't have it cached yet (avoid redundant per-match fetches)
+                if (!bracketDataForMatch) {
                     try {
                         const { data: bracketRow, error: bracketError } = await supabaseAdmin
                             .from('event_brackets')
@@ -1537,8 +1538,9 @@ export const finalizeRoundMatches = async (req, res) => {
                         if (bracketError) {
                             console.error(`[Finalize] Failed to fetch bracket ${existingMatch.bracket_id} for match ${matchData.matchId}:`, bracketError);
                         } else if (bracketRow) {
-                            // Prefer bracket_data, then draw_data
+                            // Prefer bracket_data, then draw_data — cache for subsequent iterations
                             bracketDataForMatch = bracketRow.bracket_data || bracketRow.draw_data || {};
+                            bracketDataObjForFinalize = bracketDataForMatch;
                             console.log(`[Finalize] Fetched bracket data for match ${matchData.matchId}, rounds:`, bracketDataForMatch.rounds?.map(r => r.name) || []);
                         }
                     } catch (err) {
@@ -1624,14 +1626,18 @@ export const finalizeRoundMatches = async (req, res) => {
                 const winnerIdB = getPlayerId(effectivePlayerB);
                 
                 if (!winnerIdA || !winnerIdB) {
-                    // Provide helpful error with match details
+                    // Skip this match instead of failing the entire batch
                     const matchInfo = `Match ${matchData.matchId} (${existingMatch.round_name}, bracket_match_id: ${existingMatch.bracket_match_id || 'none'})`;
                     const playerAInfo = effectivePlayerA ? (typeof effectivePlayerA === 'object' ? JSON.stringify(effectivePlayerA) : String(effectivePlayerA)) : 'null/empty';
                     const playerBInfo = effectivePlayerB ? (typeof effectivePlayerB === 'object' ? JSON.stringify(effectivePlayerB) : String(effectivePlayerB)) : 'null/empty';
-                    return res.status(400).json({
-                        success: false,
-                        message: `Cannot compute winner for ${matchInfo}: missing valid player_a or player_b. player_a: ${playerAInfo}, player_b: ${playerBInfo}. Please ensure players are assigned in the bracket before finalizing scores.`
+                    console.warn(`[Finalize] Skipping ${matchInfo}: missing valid player_a (${playerAInfo}) or player_b (${playerBInfo}). Ensure players are assigned in bracket.`);
+                    skippedMatches.push({
+                        matchId: matchData.matchId,
+                        reason: `Missing player_a or player_b`,
+                        playerA: playerAInfo,
+                        playerB: playerBInfo
                     });
+                    continue;
                 }
                 
                 if (categoryWinnerMode === 'score_based') {
@@ -1702,14 +1708,18 @@ export const finalizeRoundMatches = async (req, res) => {
                 const winnerIdB = getPlayerId(effectivePlayerB);
                 
                 if (!winnerIdA || !winnerIdB) {
-                    // Provide helpful error with match details
+                    // Skip this match instead of failing the entire batch
                     const matchInfo = `Match ${matchData.matchId} (${existingMatch.round_name}, bracket_match_id: ${existingMatch.bracket_match_id || 'none'})`;
                     const playerAInfo = effectivePlayerA ? (typeof effectivePlayerA === 'object' ? JSON.stringify(effectivePlayerA) : String(effectivePlayerA)) : 'null/empty';
                     const playerBInfo = effectivePlayerB ? (typeof effectivePlayerB === 'object' ? JSON.stringify(effectivePlayerB) : String(effectivePlayerB)) : 'null/empty';
-                    return res.status(400).json({
-                        success: false,
-                        message: `Cannot compute winner for ${matchInfo}: missing valid player_a or player_b. player_a: ${playerAInfo}, player_b: ${playerBInfo}. Please ensure players are assigned in the bracket before finalizing scores.`
+                    console.warn(`[Finalize] Skipping ${matchInfo}: missing valid player_a (${playerAInfo}) or player_b (${playerBInfo}). Ensure players are assigned in bracket.`);
+                    skippedMatches.push({
+                        matchId: matchData.matchId,
+                        reason: `Missing player_a or player_b`,
+                        playerA: playerAInfo,
+                        playerB: playerBInfo
                     });
+                    continue;
                 }
                 
                 if (p1Score > p2Score) {
@@ -1746,6 +1756,8 @@ export const finalizeRoundMatches = async (req, res) => {
         }
 
         // Update all matches in DB (include player_a/player_b when enriched)
+        let results = [];
+        if (updates.length > 0) {
         const updatePromises = updates.map(update => {
             const payload = {
                 score: update.score,
@@ -1763,7 +1775,7 @@ export const finalizeRoundMatches = async (req, res) => {
                 .single();
         });
 
-        const results = await Promise.all(updatePromises);
+        results = await Promise.all(updatePromises);
         const errors = results.filter(r => r.error);
 
         if (errors.length > 0) {
@@ -1774,8 +1786,10 @@ export const finalizeRoundMatches = async (req, res) => {
                 errors: errors.map(e => e.error?.message)
             });
         }
+        } // end if (updates.length > 0)
 
         // ---- Winner propagation through bracket_data using bracket_match_id ----
+        if (updates.length > 0) {
         try {
             // Bracket lookup must be robust:
             // - Some deployments store non-UUID category IDs (numeric/string) in category_id
@@ -2113,11 +2127,25 @@ export const finalizeRoundMatches = async (req, res) => {
             console.error("Winner propagation through bracket_data failed:", propErr);
             // Non-fatal: scores are still saved, bracket view just won't update for this call.
         }
+        } // end if (updates.length > 0) for winner propagation
+
+        // If all matches were skipped (none could be finalized), report as error
+        if (updates.length === 0 && skippedMatches.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: `No matches could be finalized. ${skippedMatches.length} match(es) skipped due to missing player data. Please ensure players are assigned in the bracket before finalizing scores.`,
+                skippedMatches
+            });
+        }
 
         return res.status(200).json({
             success: true,
-            message: `Successfully finalized ${updates.length} match(es)`,
+            message: skippedMatches.length > 0
+                ? `Finalized ${updates.length} match(es). ${skippedMatches.length} match(es) skipped (missing player data).`
+                : `Successfully finalized ${updates.length} match(es)`,
             finalizedCount: updates.length,
+            skippedCount: skippedMatches.length,
+            skippedMatches: skippedMatches.length > 0 ? skippedMatches : undefined,
             matches: results.map(r => r.data).filter(Boolean)
         });
 
