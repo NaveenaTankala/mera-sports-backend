@@ -274,6 +274,14 @@ export const updateBracketMatch = async (req, res) => {
             if (player1 !== undefined) match.player1 = safeP1;
             if (player2 !== undefined) match.player2 = safeP2;
 
+            // If a player slot was cleared (set to null/None), mark the match as NOT a BYE.
+            // This persists in bracket_data so the frontend won't treat this single-player
+            // match as a BYE auto-advance after page refresh. Without this, removing a
+            // player would create an extra BYE beyond the allowed count.
+            if ((player1 !== undefined && !safeP1) || (player2 !== undefined && !safeP2)) {
+                match.isBye = false;
+            }
+
             if (match.winner) {
                 match.winner = null;
             }
