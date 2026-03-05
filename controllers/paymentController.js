@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "../config/supabaseClient.js";
 import { sendRegistrationEmail } from "../utils/mailer.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
+import { createNotification } from "../services/notificationService.js";
 
 // POST /api/payment/submit-manual-payment
 export const submitManualPayment = async (req, res) => {
@@ -63,6 +64,39 @@ export const submitManualPayment = async (req, res) => {
                 }
             } catch (e) { console.error("Email Error:", e); }
         })();
+
+        // 4. Notify team members about event registration (Async)
+        if (teamId) {
+            (async () => {
+                try {
+                    const { data: team } = await supabaseAdmin.from("player_teams").select("team_name, captain_name, members").eq("id", teamId).maybeSingle();
+                    const { data: event } = await supabaseAdmin.from("events").select("name").eq("id", eventId).maybeSingle();
+                    if (team && Array.isArray(team.members)) {
+                        const eventName = event?.name || 'an event';
+                        const captainName = team.captain_name || 'Your captain';
+                        for (const member of team.members) {
+                            let memberUserId = member.id || null;
+                            if (!memberUserId && member.player_id) {
+                                const { data: u } = await supabaseAdmin.from('users').select('id').ilike('player_id', member.player_id).maybeSingle();
+                                if (u) memberUserId = u.id;
+                            }
+                            if (!memberUserId && member.mobile) {
+                                const { data: u } = await supabaseAdmin.from('users').select('id').eq('mobile', member.mobile).maybeSingle();
+                                if (u) memberUserId = u.id;
+                            }
+                            if (memberUserId) {
+                                await createNotification(
+                                    memberUserId,
+                                    'Team Event Registration',
+                                    `${captainName} registered your team "${team.team_name}" for "${eventName}".`,
+                                    'info'
+                                );
+                            }
+                        }
+                    }
+                } catch (e) { console.error("Team Notification Error:", e); }
+            })();
+        }
 
         res.json({ success: true, message: "Payment submitted", transactionId: transaction.id, registrationNo });
 
