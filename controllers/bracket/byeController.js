@@ -466,10 +466,17 @@ export const assignByeToPlayer = async (req, res) => {
             return res.status(500).json({ message: "Failed to fetch player data", error: err.message });
         }
 
-        // Assign to empty slot
-        const emptySlot = p1 ? "player2" : "player1";
-        match[emptySlot] = playerObj;
-        match.winner = p1 ? "player1" : "player2";
+        // Swap: replace existing player with new one, keep other slot empty (BYE persists)
+        // The new player gets the BYE (free pass to next round)
+        if (p1) {
+            match.player1 = playerObj;
+            match.player2 = null;
+            match.winner = "player1";
+        } else {
+            match.player1 = null;
+            match.player2 = playerObj;
+            match.winner = "player2";
+        }
         match.isManualBye = true;
 
         // Save
