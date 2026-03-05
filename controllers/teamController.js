@@ -2,37 +2,93 @@ import { supabaseAdmin } from "../config/supabaseClient.js";
 import { createNotification } from "../services/notificationService.js";
 
 /**
- * Resolve member user UUIDs from player_id strings / mobiles and
- * send "added to team" notifications to each member.
+ * Batch-resolve member user UUIDs and send "added to team" notifications.
+ * Uses a single prefetch query instead of sequential per-member lookups.
  */
+async function resolveMemberUserIds(members) {
+    if (!Array.isArray(members) || members.length === 0) return new Map();
+
+    // Collect all known UUIDs, player_ids, and mobiles
+    const knownIds = [];
+    const playerIds = [];
+    const mobiles = [];
+    for (const m of members) {
+        if (m.id) knownIds.push(m.id);
+        if (m.player_id) playerIds.push(m.player_id.toUpperCase());
+        if (m.mobile) mobiles.push(m.mobile);
+    }
+
+    // Batch fetch all matching users in a single query
+    const orFilters = [];
+    if (knownIds.length > 0) orFilters.push(`id.in.(${knownIds.join(',')})`);
+    if (playerIds.length > 0) orFilters.push(`player_id.in.(${playerIds.join(',')})`);
+    if (mobiles.length > 0) orFilters.push(`mobile.in.(${mobiles.join(',')})`);
+
+    if (orFilters.length === 0) return new Map();
+
+    const { data: users, error } = await supabaseAdmin
+        .from('users')
+        .select('id, player_id, mobile')
+        .or(orFilters.join(','));
+
+    if (error) {
+        console.error('Batch user lookup error:', error);
+        return new Map();
+    }
+
+    // Build lookup maps for fast resolution
+    const byId = new Map();
+    const byPlayerId = new Map();
+    const byMobile = new Map();
+    for (const u of (users || [])) {
+        if (u.id) byId.set(u.id, u.id);
+        if (u.player_id) byPlayerId.set(u.player_id.toUpperCase(), u.id);
+        if (u.mobile) byMobile.set(u.mobile, u.id);
+    }
+
+    // Resolve each member to a user UUID
+    const resolved = new Map();
+    for (const m of members) {
+        const key = m.id || m.player_id || m.mobile;
+        const userId = (m.id && byId.get(m.id))
+            || (m.player_id && byPlayerId.get(m.player_id.toUpperCase()))
+            || (m.mobile && byMobile.get(m.mobile))
+            || null;
+        if (userId && key) resolved.set(key, userId);
+    }
+    return resolved;
+}
+
 async function notifyTeamMembers(members, teamName, captainName) {
     if (!Array.isArray(members) || members.length === 0) return;
 
-    for (const member of members) {
-        try {
-            // Resolve user UUID — may already be present as member.id
-            let memberUserId = member.id || null;
+    try {
+        const resolvedIds = await resolveMemberUserIds(members);
 
-            if (!memberUserId && member.player_id) {
-                const { data } = await supabaseAdmin.from('users').select('id').ilike('player_id', member.player_id).maybeSingle();
-                if (data) memberUserId = data.id;
-            }
-            if (!memberUserId && member.mobile) {
-                const { data } = await supabaseAdmin.from('users').select('id').eq('mobile', member.mobile).maybeSingle();
-                if (data) memberUserId = data.id;
-            }
-
-            if (memberUserId) {
-                await createNotification(
-                    memberUserId,
-                    'Added to Team',
-                    `${captainName} added you to the team "${teamName}".`,
-                    'info'
+        const notificationPromises = [];
+        for (const member of members) {
+            const key = member.id || member.player_id || member.mobile;
+            const userId = key ? resolvedIds.get(key) : null;
+            if (userId) {
+                notificationPromises.push(
+                    createNotification(
+                        userId,
+                        'Added to Team',
+                        `${captainName} added you to the team "${teamName}".`,
+                        'info'
+                    )
                 );
             }
-        } catch (e) {
-            console.error('Team member notification error:', e);
         }
+
+        const results = await Promise.allSettled(notificationPromises);
+        results.forEach((r, i) => {
+            if (r.status === 'rejected') {
+                console.error(`Team notification ${i} failed:`, r.reason);
+            }
+        });
+    } catch (e) {
+        console.error('notifyTeamMembers error:', e);
     }
 }
 

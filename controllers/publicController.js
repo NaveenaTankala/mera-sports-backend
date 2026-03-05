@@ -8,6 +8,23 @@ const isUuid = (value) => {
     );
 };
 
+/**
+ * Sanitize a string for safe use in Supabase ilike / eq filters.
+ * Strips characters that could be used for SQL/PostgREST injection:
+ *   - Removes parentheses, semicolons, single/double quotes, backslashes, commas
+ *   - Escapes SQL LIKE wildcards (% and _) so they match literally
+ *   - Trims and limits length to 200 chars
+ */
+const sanitizeFilterInput = (value) => {
+    if (!value || typeof value !== 'string') return '';
+    return value
+        .replace(/[()';"\\,]/g, '')  // strip dangerous chars
+        .replace(/%/g, '\\%')        // escape LIKE wildcard
+        .replace(/_/g, '\\_')        // escape LIKE wildcard
+        .trim()
+        .slice(0, 200);
+};
+
 // GET /api/public/settings
 export const getPublicSettings = async (req, res) => {
     try {
@@ -41,7 +58,8 @@ export const getPublicSettings = async (req, res) => {
 export const getPublicCategoryDraw = async (req, res) => {
     try {
         const { id: eventId, categoryId } = req.params;
-        const categoryLabel = req.query.categoryLabel || req.query.category;
+        const rawCategoryLabel = req.query.categoryLabel || req.query.category;
+        const categoryLabel = rawCategoryLabel ? sanitizeFilterInput(rawCategoryLabel) : null;
 
         if (!eventId) return res.status(400).json({ message: "Event ID required" });
 
@@ -62,9 +80,9 @@ export const getPublicCategoryDraw = async (req, res) => {
 
         // Partial matching fallback when using categoryLabel
         if ((!data || data.length === 0) && categoryLabel && !categoryId) {
-            const labelParts = categoryLabel.split(" - ").filter(p => p.trim());
+            const labelParts = categoryLabel.split(" - ").filter(p => p.trim()).map(p => sanitizeFilterInput(p));
             if (labelParts.length > 0) {
-                const baseCategory = labelParts[0];
+                const baseCategory = sanitizeFilterInput(labelParts[0]);
                 const { data: partialData, error: partialError } = await supabaseAdmin
                     .from("event_brackets")
                     .select("*")
