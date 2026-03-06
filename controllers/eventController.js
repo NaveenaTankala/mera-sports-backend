@@ -105,6 +105,46 @@ export const createEvent = async (req, res) => {
             data.qr_code = qrPublicUrl;
         } catch (e) { console.error("QR Gen Failed:", e); }
 
+        // Trigger Notifications for Superadmins if an admin created the event
+        if (req.user && req.user.role === 'admin') {
+            try {
+                // Fetch the admin's name
+                let adminName = 'An Admin';
+                const { data: adminData } = await supabaseAdmin.from('users').select('name').eq('id', req.user.id).single();
+                if (adminData && adminData.name) {
+                    adminName = adminData.name;
+                }
+
+                // Fetch all active superadmins
+                const { data: superadmins, error: fetchError } = await supabaseAdmin
+                    .from('users')
+                    .select('id')
+                    .eq('role', 'superadmin');
+
+                if (!fetchError && superadmins && superadmins.length > 0) {
+                    // Format the inserted array based on the table schema
+                    const notificationInserts = superadmins.map(sa => ({
+                        user_id: sa.id,
+                        title: 'New Event by Admin',
+                        message: `${adminName} created the event "${data.name}". Please review and assign access.`,
+                        type: 'info',
+                        link: `/events/${data.id}`
+                    }));
+
+                    // Insert into the public.notifications table
+                    const { error: insertError } = await supabaseAdmin
+                        .from('notifications')
+                        .insert(notificationInserts);
+
+                    if (insertError) {
+                        console.error("Failed to insert notifications:", insertError);
+                    }
+                }
+            } catch (notificationErr) {
+                console.error("Critical error inside notification trigger logic:", notificationErr);
+            }
+        }
+
         res.json({ success: true, event: data });
     } catch (err) {
         console.error("Create Event Logic Error:", err);
@@ -148,6 +188,11 @@ export const updateEvent = async (req, res) => {
 
         ['start_date', 'end_date', 'registration_deadline'].forEach(f => { if (updates[f] === "") updates[f] = null; });
         delete updates.id; delete updates.created_at; delete updates.created_by;
+
+        // Track who assigned the event
+        if (updates.hasOwnProperty('assigned_to') && req.user && req.user.id) {
+            updates.assigned_by = req.user.id;
+        }
 
         // document_file is already handled above (uploaded and converted to document_url, then deleted)
         delete updates.data; // Also remove potential junk
