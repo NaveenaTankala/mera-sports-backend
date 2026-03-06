@@ -159,9 +159,22 @@ export const finalizeBulkImport = async (req, res) => {
             const [dobYear, dobMonth, dobDay] = parsedDob.split("-");
             const password = `${dobDay}${dobMonth}${dobYear}`; // e.g. "15082005"
 
+            // ── Generate player_id via DB sequence ──────────────────────────
+            const { data: newPlayerId, error: pidError } = await supabaseAdmin.rpc('get_next_player_id');
+            if (pidError || !newPlayerId) {
+                console.error("Failed to generate player_id:", pidError);
+                failed.push({
+                    row: row,
+                    errorField: null,
+                    reason: `Failed to generate a Player ID for system registration.`
+                });
+                continue;
+            }
+
             // ── Build the student object ────────────────────────────────────
             const student = {
                 id: crypto.randomUUID(),
+                player_id: newPlayerId,
                 first_name: fName || null,
                 last_name: lName || null,
                 name: `${fName} ${lName}`.trim() || null,
@@ -264,7 +277,7 @@ export const getApprovedPlayers = async (req, res) => {
         // Query the database to find all players belonging to this institute_name
         const { data: players, error } = await supabaseAdmin
             .from("users")
-            .select("first_name, last_name, dob, gender, mobile, email, aadhaar")
+            .select("first_name, last_name, dob, gender, mobile, email, aadhaar, created_at")
             .eq("institute_name", resolvedInstituteName)
             .eq("role", "player")
             .order("created_at", { ascending: false });

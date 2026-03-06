@@ -13,7 +13,11 @@ import {
     rejectInstitute,
     rejectAdmin,
     updateAdminRole,
-    uploadAsset
+    uploadAsset,
+    getAllPermissions,
+    updatePermissions,
+    getMyPermissions,
+    getAssignments
 } from "../controllers/adminController.js";
 import {
     bulkUpdateTransactions,
@@ -43,6 +47,7 @@ const router = express.Router();
 
 /* ================= ADMIN MANAGEMENT ================= */
 router.get("/list-admins", verifyAdmin, listAdmins);
+router.get("/assignments", verifyAdmin, getAssignments);
 router.get("/institutes/pending", verifyAdmin, getPendingInstitutes);
 router.get("/institutes/verified", verifyAdmin, getVerifiedInstitutes);
 router.get("/institutes/imports/pending", verifyAdmin, getPendingStudentImports);
@@ -87,7 +92,11 @@ router.delete("/news/:id", verifyAdmin, deleteEventNews);
 /* ================= BRACKETS MANAGEMENT ================= */
 router.get("/brackets", verifyAdmin, getBrackets);
 router.post("/brackets", verifyAdmin, saveBracket);
-router.delete("/brackets/:id", verifyAdmin, deleteBracket); // Fixed to use param
-// Cleaned up the confusing DELETE /brackets without ID from old code
+router.delete("/brackets/:id", verifyAdmin, deleteBracket);
+
+/* ================= PERMISSIONS MANAGEMENT ================= */
+router.get("/permissions", verifyAdmin, getAllPermissions);           // superadmin only — all admins + their permissions
+router.put("/permissions/:adminId", verifyAdmin, updatePermissions); // superadmin only — toggle specific admin's permissions
+router.get("/my-permissions", verifyAdmin, getMyPermissions);         // any admin — get own permissions on login
 
 export default router;

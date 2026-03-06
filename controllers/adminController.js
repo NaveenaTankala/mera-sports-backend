@@ -180,8 +180,27 @@ export const rejectInstitute = async (req, res) => {
 // POST /api/admin/approve-admin/:id
 export const approveAdmin = async (req, res) => {
     try {
-        const { error } = await supabaseAdmin.from("users").update({ verification: "verified" }).eq("id", req.params.id);
+        const adminId = req.params.id;
+
+        // 1. Mark admin as verified
+        const { error } = await supabaseAdmin
+            .from("users")
+            .update({ verification: "verified" })
+            .eq("id", adminId);
         if (error) throw error;
+
+        // 2. Auto-insert default permissions row for this admin (safe upsert)
+        await supabaseAdmin
+            .from("admin_permissions")
+            .upsert({
+                admin_id: adminId,
+                permit: true,
+                apartments: true,
+                advertisements: true,
+                broadcast: true,
+                reports: true
+            }, { onConflict: "admin_id", ignoreDuplicates: true });
+
         res.json({ success: true, message: "Admin approved successfully" });
     } catch (err) {
         console.error("APPROVE ADMIN ERROR:", err);
@@ -336,3 +355,181 @@ export const uploadAsset = async (req, res) => {
         res.status(500).json({ message: "Server error during upload" });
     }
 };
+
+/* ================= ADMIN PERMISSIONS ================= */
+
+// GET /api/admin/permissions — Superadmin only: list all admins + their permissions
+export const getAllPermissions = async (req, res) => {
+    try {
+        if (req.user.role !== 'superadmin') {
+            return res.status(403).json({ success: false, message: "Access denied. Only superadmins can view all permissions." });
+        }
+
+        // Fetch all admins
+        const { data: admins, error: adminsError } = await supabaseAdmin
+            .from("users")
+            .select("id, name, email, role")
+            .eq("role", "admin");
+
+        if (adminsError) throw adminsError;
+
+        // Fetch all permission rows
+        const { data: perms, error: permsError } = await supabaseAdmin
+            .from("admin_permissions")
+            .select("admin_id, permit, apartments, advertisements, broadcast, reports");
+
+        if (permsError) throw permsError;
+
+        // Left join: merge permissions into each admin; default to true for missing rows
+        const permMap = {};
+        (perms || []).forEach(p => { permMap[p.admin_id] = p; });
+
+        const data = (admins || []).map(admin => {
+            const perm = permMap[admin.id];
+            return {
+                admin_id: admin.id,
+                name: admin.name,
+                email: admin.email,
+                permit: perm ? perm.permit : true,
+                apartments: perm ? perm.apartments : true,
+                advertisements: perm ? perm.advertisements : true,
+                broadcast: perm ? perm.broadcast : true,
+                reports: perm ? perm.reports : true
+            };
+        });
+
+        res.json({ success: true, data });
+    } catch (err) {
+        console.error("GET ALL PERMISSIONS ERROR:", err);
+        res.status(500).json({ message: "Failed to fetch permissions" });
+    }
+};
+
+// PUT /api/admin/permissions/:adminId — Superadmin only: update permissions for one admin
+export const updatePermissions = async (req, res) => {
+    try {
+        if (req.user.role !== 'superadmin') {
+            return res.status(403).json({ success: false, message: "Access denied. Only superadmins can change permissions." });
+        }
+
+        const { adminId } = req.params;
+        const { permit, apartments, advertisements, broadcast, reports } = req.body;
+
+        // Build only the fields that were sent
+        const updates = { updated_at: new Date().toISOString(), updated_by: req.user.id };
+        if (permit !== undefined) updates.permit = permit;
+        if (apartments !== undefined) updates.apartments = apartments;
+        if (advertisements !== undefined) updates.advertisements = advertisements;
+        if (broadcast !== undefined) updates.broadcast = broadcast;
+        if (reports !== undefined) updates.reports = reports;
+
+        // Upsert: insert if no row, update if one exists
+        const { error } = await supabaseAdmin
+            .from("admin_permissions")
+            .upsert({ admin_id: adminId, ...updates }, { onConflict: "admin_id" });
+
+        if (error) throw error;
+
+        res.json({ success: true, message: "Permissions updated successfully." });
+    } catch (err) {
+        console.error("UPDATE PERMISSIONS ERROR:", err);
+        res.status(500).json({ message: "Failed to update permissions" });
+    }
+};
+
+// GET /api/admin/my-permissions — Any admin: get their own permissions
+export const getMyPermissions = async (req, res) => {
+    try {
+        // Superadmins always have full access — no DB lookup needed
+        if (req.user.role === 'superadmin') {
+            return res.json({
+                success: true,
+                permissions: { permit: true, apartments: true, advertisements: true, broadcast: true, reports: true }
+            });
+        }
+
+        const { data: perm, error } = await supabaseAdmin
+            .from("admin_permissions")
+            .select("permit, apartments, advertisements, broadcast, reports")
+            .eq("admin_id", req.user.id)
+            .maybeSingle();
+
+        if (error) throw error;
+
+        // If no row exists yet, return all true as safe default
+        const permissions = perm || { permit: true, apartments: true, advertisements: true, broadcast: true, reports: true };
+
+        res.json({ success: true, permissions });
+    } catch (err) {
+        console.error("GET MY PERMISSIONS ERROR:", err);
+        res.status(500).json({ message: "Failed to fetch own permissions" });
+    }
+};
+
+// GET /api/admin/assignments
+export const getAssignments = async (req, res) => {
+    if (req.user.role !== 'superadmin') {
+        return res.status(403).json({ success: false, message: 'Superadmin only.' });
+    }
+    try {
+        // Fetch all events with an assignment using select("*") to be safe against missing columns
+        const { data: eventsData, error } = await supabaseAdmin
+            .from('events')
+            .select('*')
+            .not('assigned_to', 'is', null);
+
+        if (error) throw error;
+
+        // Collect all distinct user IDs needed (both assigned_to and assigned_by)
+        const userIds = new Set();
+        (eventsData || []).forEach(event => {
+            if (event.assigned_to) userIds.add(event.assigned_to);
+            if (event.assigned_by) userIds.add(event.assigned_by);
+        });
+
+        // Fetch those users in one batch
+        const usersMap = {};
+        if (userIds.size > 0) {
+            const { data: usersData, error: usersError } = await supabaseAdmin
+                .from('users')
+                .select('id, name, email, photos, mobile, role')
+                .in('id', Array.from(userIds));
+
+            if (!usersError && usersData) {
+                usersData.forEach(u => {
+                    usersMap[u.id] = u;
+                });
+            }
+        }
+
+        // Map data to the exact schema the Frontend relies on
+        const formattedData = (eventsData || []).map(event => {
+            const assignedToUser = usersMap[event.assigned_to] || {};
+            const assignedByUser = usersMap[event.assigned_by] || {};
+
+            return {
+                id: event.id,
+                admin_id: event.assigned_to || null,
+                admin_name: assignedToUser.name || "Unknown",
+                admin_email: assignedToUser.email || "Unknown",
+                admin_details: {
+                    id: event.assigned_to || null,
+                    name: assignedToUser.name || "Unknown",
+                    email: assignedToUser.email || "Unknown",
+                    mobile: assignedToUser.mobile || null,
+                    photos: assignedToUser.photos || null,
+                    role: assignedToUser.role || "unknown"
+                },
+                event_name: event.name || "Untitled Event",
+                assigned_by_name: assignedByUser.name || "System",
+                assigned_at: event.updated_at || event.created_at || new Date().toISOString()
+            };
+        });
+
+        return res.json({ success: true, data: formattedData });
+    } catch (err) {
+        console.error("GET ASSIGNMENTS ERROR:", err);
+        return res.status(500).json({ success: false, message: 'Internal Server Error' });
+    }
+};
+
