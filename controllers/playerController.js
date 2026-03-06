@@ -1,3 +1,4 @@
+import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { supabaseAdmin } from "../config/supabaseClient.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
@@ -196,9 +197,23 @@ export const changePassword = async (req, res) => {
         } catch (e) { return res.status(403).json({ message: "Invalid token" }); }
 
         const { data: user } = await supabaseAdmin.from("users").select("password").eq("id", req.user.id).maybeSingle();
-        if (user.password !== currentPassword) return res.status(401).json({ message: "Incorrect current password" });
+        let isMatch;
+        try {
+            isMatch = await bcrypt.compare(currentPassword, user.password);
+        } catch (compareErr) {
+            console.error("PASSWORD COMPARE ERROR:", compareErr.message);
+            return res.status(500).json({ message: "Password verification failed. Please try again." });
+        }
+        if (!isMatch) return res.status(401).json({ message: "Incorrect current password" });
 
-        const { error } = await supabaseAdmin.from("users").update({ password: newPassword }).eq("id", req.user.id);
+        let hashedNewPassword;
+        try {
+            hashedNewPassword = await bcrypt.hash(newPassword, 12);
+        } catch (hashErr) {
+            console.error("PASSWORD HASH ERROR:", hashErr.message);
+            return res.status(500).json({ message: "Failed to secure new password. Please try again." });
+        }
+        const { error } = await supabaseAdmin.from("users").update({ password: hashedNewPassword }).eq("id", req.user.id);
         if (error) throw error;
         res.json({ success: true, message: "Password updated" });
     } catch (err) { res.status(500).json({ message: "Failed to change password" }); }

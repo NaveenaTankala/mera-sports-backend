@@ -12,7 +12,8 @@
     "check:db": "node scripts/check_db.js",
     "seed:multi": "node scripts/seed_multi_category_event.js",
     "seed:football": "node scripts/seed_football_event.js",
-    "seed:team-league": "node scripts/seed_team_league.js"
+    "seed:team-league": "node scripts/seed_team_league.js",
+    "migrate:passwords": "node scripts/migrate_passwords_bcrypt.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.87.3",
