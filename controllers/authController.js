@@ -1,3 +1,4 @@
+import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { supabaseAdmin } from "../config/supabaseClient.js";
@@ -241,9 +242,10 @@ export const registerPlayer = async (req, res) => {
         };
         const age = calculateAge(dob);
 
-        // 2. Generate Password (DDMMYYYY)
+        // 2. Generate Password (DDMMYYYY) and hash with bcrypt
         const [year, month, day] = dob.split("-");
-        const password = `${day}${month}${year}`;
+        const plainPassword = `${day}${month}${year}`;
+        const password = await bcrypt.hash(plainPassword, 12);
 
         // 3. Duplicate Check
         const { data: existing } = await supabaseAdmin
@@ -330,12 +332,12 @@ export const registerPlayer = async (req, res) => {
             { expiresIn: "7d" }
         );
 
-        // 10. Send Welcome Email
+        // 10. Send Welcome Email (send the plain-text password, not the hash)
         try {
             await sendRegistrationSuccessEmail(user.email, {
                 name: user.name,
                 playerId: user.player_id,
-                password: password
+                password: plainPassword
             });
         } catch (emailErr) { console.error("Welcome Email Error:", emailErr.message); }
 
@@ -379,8 +381,9 @@ export const loginPlayer = async (req, res) => {
         if (error || !user) return res.status(401).json({ message: "Invalid credentials" });
         if (user.role !== 'player') return res.status(403).json({ message: "This account is for Admins." });
 
-        // Plain text password comparison
-        if (user.password !== password) return res.status(401).json({ message: "Invalid credentials" });
+        // Bcrypt password comparison
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
         const token = jwt.sign({ id: user.id, role: 'player' }, process.env.JWT_SECRET, { expiresIn: "7d" });
 
@@ -455,6 +458,7 @@ export const registerInstitute = async (req, res) => {
 
         if (existing) return res.status(400).json({ message: "An account already exists with this email." });
 
+        const hashedPassword = await bcrypt.hash(password, 12);
         const newUserId = crypto.randomUUID();
 
         // Insert new user into the database
@@ -466,7 +470,7 @@ export const registerInstitute = async (req, res) => {
             email: email,
             mobile: contactNumber,
             website: website || null,
-            password: password,
+            password: hashedPassword,
             role: 'institutehead',
             verification: 'pending',
             apartment: address || null
@@ -526,9 +530,10 @@ export const loginInstitute = async (req, res) => {
 
         console.log("✅ [LoginInstitute] STEP 2 PASSED — Role is institutehead");
 
-        // 401 — wrong password (plain text comparison, no hashing)
-        if (user.password !== password) {
-            console.log("❌ [LoginInstitute] STEP 3 FAILED — Password mismatch. DB password:", user.password, "| Received:", password);
+        // Bcrypt password comparison
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            console.log("❌ [LoginInstitute] STEP 3 FAILED — Password mismatch");
             return res.status(401).json({ message: "Invalid credentials" });
         }
 
@@ -578,7 +583,7 @@ export const loginAdmin = async (req, res) => {
         if (error || !user) return res.status(401).json({ message: "Invalid credentials" });
         if (user.role !== 'admin' && user.role !== 'superadmin') return res.status(403).json({ message: "Access Denied." });
 
-        // Plain text password comparison
+        // Google OAuth admins use placeholder password — plain text comparison
         if (user.password !== password) return res.status(401).json({ message: "Invalid credentials" });
 
         // Verification Checks — block only rejected admins

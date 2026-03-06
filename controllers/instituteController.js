@@ -1,6 +1,7 @@
-import { supabaseAdmin } from "../config/supabaseClient.js";
+import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import * as xlsx from "xlsx";
+import { supabaseAdmin } from "../config/supabaseClient.js";
 
 // 1. POST /api/institute/request-bulk-approval
 export const requestBulkApproval = async (req, res) => {
@@ -157,7 +158,8 @@ export const finalizeBulkImport = async (req, res) => {
             // ── Derive password in DDMMYYYY format (matches manual registration) ──
             // parsedDob is now YYYY-MM-DD
             const [dobYear, dobMonth, dobDay] = parsedDob.split("-");
-            const password = `${dobDay}${dobMonth}${dobYear}`; // e.g. "15082005"
+            const plainPassword = `${dobDay}${dobMonth}${dobYear}`; // e.g. "15082005"
+            const password = await bcrypt.hash(plainPassword, 12);
 
             // ── Generate player_id via DB sequence ──────────────────────────
             const { data: newPlayerId, error: pidError } = await supabaseAdmin.rpc('get_next_player_id');
@@ -190,7 +192,7 @@ export const finalizeBulkImport = async (req, res) => {
                 state: row.state || row.State || null,
                 pincode: row.pincode ? String(row.pincode) : null,
                 country: row.country || row.Country || null,
-                password: password,        // Plain-text DDMMYYYY, same as manual registration
+                password: password,        // Bcrypt-hashed DDMMYYYY, same as manual registration
                 role: 'player',
                 verification: 'verified',  // Superadmin already pre-approved
                 institute_name: resolvedInstituteName
