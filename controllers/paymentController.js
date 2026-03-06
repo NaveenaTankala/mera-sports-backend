@@ -1,6 +1,85 @@
 import { supabaseAdmin } from "../config/supabaseClient.js";
 import { sendRegistrationEmail } from "../utils/mailer.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
+import { createNotification } from "../services/notificationService.js";
+
+/**
+ * Batch-resolve team member UUIDs and notify them of event registration.
+ * Uses a single prefetch query instead of sequential per-member lookups,
+ * and Promise.allSettled for safe parallel notification delivery.
+ */
+async function notifyTeamMembersOfRegistration(teamId, eventId) {
+    try {
+        // Fetch team and event data in parallel
+        const [teamResult, eventResult] = await Promise.all([
+            supabaseAdmin.from('player_teams').select('team_name, captain_name, members').eq('id', teamId).maybeSingle(),
+            supabaseAdmin.from('events').select('name').eq('id', eventId).maybeSingle()
+        ]);
+
+        const team = teamResult.data;
+        const event = eventResult.data;
+        if (!team || !Array.isArray(team.members) || team.members.length === 0) return;
+
+        const eventName = event?.name || 'an event';
+        const captainName = team.captain_name || 'Your captain';
+
+        // Batch-resolve all member UUIDs in a single query
+        const playerIds = [];
+        const mobiles = [];
+        const knownIds = [];
+        for (const m of team.members) {
+            if (m.id) knownIds.push(m.id);
+            if (m.player_id) playerIds.push(m.player_id.toUpperCase());
+            if (m.mobile) mobiles.push(m.mobile);
+        }
+
+        const orFilters = [];
+        if (knownIds.length > 0) orFilters.push(`id.in.(${knownIds.join(',')})`);
+        if (playerIds.length > 0) orFilters.push(`player_id.in.(${playerIds.join(',')})`);
+        if (mobiles.length > 0) orFilters.push(`mobile.in.(${mobiles.join(',')})`);
+
+        if (orFilters.length === 0) return;
+
+        const { data: users, error } = await supabaseAdmin
+            .from('users')
+            .select('id, player_id, mobile')
+            .or(orFilters.join(','));
+
+        if (error || !users) {
+            console.error('Batch user lookup for team notification error:', error);
+            return;
+        }
+
+        // Build lookup maps
+        const byId = new Map(users.map(u => [u.id, u.id]));
+        const byPlayerId = new Map(users.filter(u => u.player_id).map(u => [u.player_id.toUpperCase(), u.id]));
+        const byMobile = new Map(users.filter(u => u.mobile).map(u => [u.mobile, u.id]));
+
+        // Send all notifications in parallel with safe error handling
+        const promises = team.members.map(member => {
+            const userId = (member.id && byId.get(member.id))
+                || (member.player_id && byPlayerId.get(member.player_id.toUpperCase()))
+                || (member.mobile && byMobile.get(member.mobile))
+                || null;
+            if (!userId) return Promise.resolve();
+            return createNotification(
+                userId,
+                'Team Event Registration',
+                `${captainName} registered your team "${team.team_name}" for "${eventName}".`,
+                'info'
+            );
+        });
+
+        const results = await Promise.allSettled(promises);
+        results.forEach((r, i) => {
+            if (r.status === 'rejected') {
+                console.error(`Team reg notification ${i} failed:`, r.reason);
+            }
+        });
+    } catch (e) {
+        console.error('notifyTeamMembersOfRegistration error:', e);
+    }
+}
 
 // POST /api/payment/submit-manual-payment
 export const submitManualPayment = async (req, res) => {
@@ -63,6 +142,13 @@ export const submitManualPayment = async (req, res) => {
                 }
             } catch (e) { console.error("Email Error:", e); }
         })();
+
+        // 4. Notify team members about event registration (Async, non-blocking)
+        if (teamId) {
+            notifyTeamMembersOfRegistration(teamId, eventId).catch(e =>
+                console.error('Team registration notification error:', e)
+            );
+        }
 
         res.json({ success: true, message: "Payment submitted", transactionId: transaction.id, registrationNo });
 
