@@ -159,7 +159,14 @@ export const finalizeBulkImport = async (req, res) => {
             // parsedDob is now YYYY-MM-DD
             const [dobYear, dobMonth, dobDay] = parsedDob.split("-");
             const plainPassword = `${dobDay}${dobMonth}${dobYear}`; // e.g. "15082005"
-            const password = await bcrypt.hash(plainPassword, 12);
+            let password;
+            try {
+                password = await bcrypt.hash(plainPassword, 12);
+            } catch (hashErr) {
+                console.error("Bcrypt hash error for row:", hashErr.message);
+                failed.push({ row: row, errorField: null, reason: "Failed to hash password." });
+                continue;
+            }
 
             // ── Generate player_id via DB sequence ──────────────────────────
             const { data: newPlayerId, error: pidError } = await supabaseAdmin.rpc('get_next_player_id');

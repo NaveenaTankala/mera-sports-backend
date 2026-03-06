@@ -245,7 +245,13 @@ export const registerPlayer = async (req, res) => {
         // 2. Generate Password (DDMMYYYY) and hash with bcrypt
         const [year, month, day] = dob.split("-");
         const plainPassword = `${day}${month}${year}`;
-        const password = await bcrypt.hash(plainPassword, 12);
+        let password;
+        try {
+            password = await bcrypt.hash(plainPassword, 12);
+        } catch (hashErr) {
+            console.error("PASSWORD HASH ERROR:", hashErr.message);
+            return res.status(500).json({ message: "Failed to secure password. Please try again." });
+        }
 
         // 3. Duplicate Check
         const { data: existing } = await supabaseAdmin
@@ -382,7 +388,13 @@ export const loginPlayer = async (req, res) => {
         if (user.role !== 'player') return res.status(403).json({ message: "This account is for Admins." });
 
         // Bcrypt password comparison
-        const isMatch = await bcrypt.compare(password, user.password);
+        let isMatch;
+        try {
+            isMatch = await bcrypt.compare(password, user.password);
+        } catch (compareErr) {
+            console.error("PASSWORD COMPARE ERROR:", compareErr.message);
+            return res.status(500).json({ message: "Login failed. Please try again." });
+        }
         if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
         const token = jwt.sign({ id: user.id, role: 'player' }, process.env.JWT_SECRET, { expiresIn: "7d" });
@@ -458,7 +470,13 @@ export const registerInstitute = async (req, res) => {
 
         if (existing) return res.status(400).json({ message: "An account already exists with this email." });
 
-        const hashedPassword = await bcrypt.hash(password, 12);
+        let hashedPassword;
+        try {
+            hashedPassword = await bcrypt.hash(password, 12);
+        } catch (hashErr) {
+            console.error("PASSWORD HASH ERROR:", hashErr.message);
+            return res.status(500).json({ message: "Failed to secure password. Please try again." });
+        }
         const newUserId = crypto.randomUUID();
 
         // Insert new user into the database
@@ -531,7 +549,13 @@ export const loginInstitute = async (req, res) => {
         console.log("✅ [LoginInstitute] STEP 2 PASSED — Role is institutehead");
 
         // Bcrypt password comparison
-        const isMatch = await bcrypt.compare(password, user.password);
+        let isMatch;
+        try {
+            isMatch = await bcrypt.compare(password, user.password);
+        } catch (compareErr) {
+            console.error("PASSWORD COMPARE ERROR:", compareErr.message);
+            return res.status(500).json({ message: "Login failed. Please try again." });
+        }
         if (!isMatch) {
             console.log("❌ [LoginInstitute] STEP 3 FAILED — Password mismatch");
             return res.status(401).json({ message: "Invalid credentials" });
