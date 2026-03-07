@@ -472,57 +472,74 @@ export const getAssignments = async (req, res) => {
         return res.status(403).json({ success: false, message: 'Superadmin only.' });
     }
     try {
-        // Fetch all events with an assignment using select("*") to be safe against missing columns
-        const { data: eventsData, error } = await supabaseAdmin
+        // 1. Fetch ALL Admins (only 'admin' role, exclude superadmins)
+        const { data: adminUsers, error: adminError } = await supabaseAdmin
+            .from('users')
+            .select('id, name, email, photos, mobile, role')
+            .eq('role', 'admin');
+
+        if (adminError) throw adminError;
+
+        // 2. Fetch all events that are assigned to someone
+        const { data: eventsData, error: eventsError } = await supabaseAdmin
             .from('events')
             .select('*')
             .not('assigned_to', 'is', null);
 
-        if (error) throw error;
+        if (eventsError) throw eventsError;
 
-        // Collect all distinct user IDs needed (both assigned_to and assigned_by)
-        const userIds = new Set();
+        // 3. Collect distinct user IDs of the Superadmins who did the assigning
+        const assignedByIds = new Set();
         (eventsData || []).forEach(event => {
-            if (event.assigned_to) userIds.add(event.assigned_to);
-            if (event.assigned_by) userIds.add(event.assigned_by);
+            if (event.assigned_by) assignedByIds.add(event.assigned_by);
         });
 
-        // Fetch those users in one batch
-        const usersMap = {};
-        if (userIds.size > 0) {
-            const { data: usersData, error: usersError } = await supabaseAdmin
+        // 4. Fetch those assigning Superadmins to get their names
+        const assignedByMap = {};
+        if (assignedByIds.size > 0) {
+            const { data: assignedByUsers, error: assignedByError } = await supabaseAdmin
                 .from('users')
-                .select('id, name, email, photos, mobile, role')
-                .in('id', Array.from(userIds));
+                .select('id, name')
+                .in('id', Array.from(assignedByIds));
 
-            if (!usersError && usersData) {
-                usersData.forEach(u => {
-                    usersMap[u.id] = u;
+            if (!assignedByError && assignedByUsers) {
+                assignedByUsers.forEach(u => {
+                    assignedByMap[u.id] = u.name;
                 });
             }
         }
 
-        // Map data to the exact schema the Frontend relies on
-        const formattedData = (eventsData || []).map(event => {
-            const assignedToUser = usersMap[event.assigned_to] || {};
-            const assignedByUser = usersMap[event.assigned_by] || {};
+        // 5. Build the restructured payload grouped by each Admin
+        const formattedData = (adminUsers || []).map(admin => {
+
+            // Find all events assigned specifically to THIS admin
+            const adminEvents = (eventsData || [])
+                .filter(event => event.assigned_to === admin.id)
+                .map(event => {
+                    const assignerName = event.assigned_by ? assignedByMap[event.assigned_by] : null;
+
+                    return {
+                        event_id: event.id,
+                        event_name: event.name || "Untitled Event",
+                        assigned_by_id: event.assigned_by || null,
+                        assigned_by_name: assignerName || "System",
+                        assigned_at: event.updated_at || event.created_at || new Date().toISOString()
+                    };
+                });
 
             return {
-                id: event.id,
-                admin_id: event.assigned_to || null,
-                admin_name: assignedToUser.name || "Unknown",
-                admin_email: assignedToUser.email || "Unknown",
+                admin_id: admin.id,
+                admin_name: admin.name || "Unknown",
+                admin_email: admin.email || "Unknown",
                 admin_details: {
-                    id: event.assigned_to || null,
-                    name: assignedToUser.name || "Unknown",
-                    email: assignedToUser.email || "Unknown",
-                    mobile: assignedToUser.mobile || null,
-                    photos: assignedToUser.photos || null,
-                    role: assignedToUser.role || "unknown"
+                    id: admin.id,
+                    name: admin.name || "Unknown",
+                    email: admin.email || "Unknown",
+                    mobile: admin.mobile || null,
+                    photos: admin.photos || null,
+                    role: admin.role || "unknown"
                 },
-                event_name: event.name || "Untitled Event",
-                assigned_by_name: assignedByUser.name || "System",
-                assigned_at: event.updated_at || event.created_at || new Date().toISOString()
+                assigned_events: adminEvents // Array of events for this specific admin
             };
         });
 

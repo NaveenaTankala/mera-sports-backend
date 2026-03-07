@@ -199,6 +199,7 @@ export const updateEvent = async (req, res) => {
 
         const { data, error } = await supabaseAdmin.from('events').update(updates).eq('id', id).select().single();
         if (error) throw error;
+
         res.json({ success: true, event: data });
     } catch (err) {
         console.error("Update Event Error:", err);
