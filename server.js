@@ -1,3 +1,9 @@
+// ── MUST be the very first line before any imports ──────────────────────────
+// Expands libuv thread pool from 4 → 16 threads.
+// Without this, bulk bcrypt hashing (Phase 2) fills all 4 slots, causing
+// concurrent individual player registrations to queue behind it.
+process.env.UV_THREADPOOL_SIZE = '16';
+
 import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
