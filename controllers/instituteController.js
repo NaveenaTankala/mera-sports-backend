@@ -107,8 +107,6 @@ export const finalizeBulkImport = async (req, res) => {
         const buffer = Buffer.from(base64Data, "base64");
         const workbook = xlsx.read(buffer, { type: "buffer", cellDates: true });
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-
-        // Convert to JSON
         const rawStudents = xlsx.utils.sheet_to_json(worksheet, { defval: "" });
 
         if (!rawStudents || rawStudents.length === 0) {
@@ -118,7 +116,11 @@ export const finalizeBulkImport = async (req, res) => {
         const successful = [];
         const failed = [];
 
-        // Process each student row individually
+        // ── PHASE 1: Parse every row (DOB + field extraction) ─────────────────
+        // Fast synchronous pass — no I/O, no hashing yet.
+        // Rows that fail DOB parsing go straight to failed[].
+        const parsedStudents = [];
+
         for (const row of rawStudents) {
             const fName = String(row.first_name || row.FirstName || row["First Name"] || "").trim();
             const lName = String(row.last_name || row.LastName || row["Last Name"] || "").trim();
@@ -127,60 +129,103 @@ export const finalizeBulkImport = async (req, res) => {
             let parsedDob = row.dob || row.DoB || row["Date of Birth (DD-MM-YYYY)"] || row["Date of Birth"] || null;
 
             if (parsedDob instanceof Date) {
-                parsedDob = parsedDob.toISOString().split('T')[0]; // ISO YYYY-MM-DD
+                parsedDob = parsedDob.toISOString().split("T")[0];               // JS Date → YYYY-MM-DD
             } else if (typeof parsedDob === "number") {
                 // Excel serial date fallback
                 const excelEpoch = new Date(Date.UTC(1899, 11, 30));
-                parsedDob = new Date(excelEpoch.getTime() + parsedDob * 86400000).toISOString().split('T')[0];
+                parsedDob = new Date(excelEpoch.getTime() + parsedDob * 86400000).toISOString().split("T")[0];
             } else if (typeof parsedDob === "string" && parsedDob.trim() !== "") {
-                // Handle DD-MM-YYYY string format from Excel column
+                // Handle DD-MM-YYYY string
                 const ddmmyyyy = parsedDob.trim().match(/^(\d{2})[-\/](\d{2})[-\/](\d{4})$/);
                 if (ddmmyyyy) {
-                    parsedDob = `${ddmmyyyy[3]}-${ddmmyyyy[2]}-${ddmmyyyy[1]}`; // → YYYY-MM-DD
+                    parsedDob = `${ddmmyyyy[3]}-${ddmmyyyy[2]}-${ddmmyyyy[1]}`;  // → YYYY-MM-DD
                 } else {
                     const d = new Date(parsedDob);
-                    parsedDob = !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : null;
+                    parsedDob = !isNaN(d.getTime()) ? d.toISOString().split("T")[0] : null;
                 }
             } else {
                 parsedDob = null;
             }
 
-            // ── DOB Required to Generate Password ───────────────────────────
             if (!parsedDob) {
                 failed.push({
-                    row: row,    // <--- THIS IS THE FIX. Pass the full unmutated row!
+                    row,
                     errorField: "dob",
                     reason: "Date of Birth is required to generate password or date format is invalid."
                 });
-                continue; // Skip this row, don't try to insert
-            }
-
-            // ── Derive password in DDMMYYYY format (matches manual registration) ──
-            // parsedDob is now YYYY-MM-DD
-            const [dobYear, dobMonth, dobDay] = parsedDob.split("-");
-            const plainPassword = `${dobDay}${dobMonth}${dobYear}`; // e.g. "15082005"
-            let password;
-            try {
-                password = await bcrypt.hash(plainPassword, 12);
-            } catch (hashErr) {
-                console.error("Bcrypt hash error for row:", hashErr.message);
-                failed.push({ row: row, errorField: null, reason: "Failed to hash password." });
                 continue;
             }
 
-            // ── Generate player_id via DB sequence ──────────────────────────
-            const { data: newPlayerId, error: pidError } = await supabaseAdmin.rpc('get_next_player_id');
+            // Plain-text DDMMYYYY password (same convention as manual registration)
+            const [dobYear, dobMonth, dobDay] = parsedDob.split("-");
+            const plainPassword = `${dobDay}${dobMonth}${dobYear}`;
+
+            parsedStudents.push({ row, fName, lName, parsedDob, plainPassword });
+        }
+
+        // ── PHASE 2: Throttled bcrypt hashing in batches of 2 ──────────────────
+        // INTENTIONALLY CONSERVATIVE — protects concurrent individual registrations.
+        //
+        // With UV_THREADPOOL_SIZE=16 (set in server.js), the thread pool has 16 slots.
+        // We only consume 2 at a time, leaving 14 free for any simultaneous:
+        //   • Individual player registrations
+        //   • Admin logins / OTP requests
+        //   • Any other bcrypt operations
+        //
+        // A 50ms delay between batches also gives Supabase connection pool breathing
+        // room so concurrent DB inserts from other requests are never blocked.
+        //
+        // Example — 200 students with HASH_BATCH=2:
+        //   100 batches × ~80ms per batch + 100 × 50ms delay = ~13 seconds total
+        //   This is acceptable since the frontend shows a loader during import.
+        const BCRYPT_COST = 10;
+        const HASH_BATCH = 2;  // Conservative: only 2 concurrent bcrypt ops at a time
+        const BATCH_DELAY_MS = 50; // Breathing room between batches for other requests
+        const hashedStudents = [];
+
+        for (let i = 0; i < parsedStudents.length; i += HASH_BATCH) {
+            const batch = parsedStudents.slice(i, i + HASH_BATCH);
+
+            const batchResults = await Promise.all(
+                batch.map(async (student) => {
+                    try {
+                        const hashedPassword = await bcrypt.hash(student.plainPassword, BCRYPT_COST);
+                        return { ...student, hashedPassword, hashError: null };
+                    } catch (hashErr) {
+                        return { ...student, hashedPassword: null, hashError: hashErr.message };
+                    }
+                })
+            );
+
+            for (const result of batchResults) {
+                if (result.hashError) {
+                    console.error("Bcrypt hash error:", result.hashError);
+                    failed.push({ row: result.row, errorField: null, reason: "Failed to hash password." });
+                } else {
+                    hashedStudents.push(result);
+                }
+            }
+
+            // Breathing delay: yield to event loop so other incoming requests
+            // (individual registrations, logins) are processed between batches.
+            if (i + HASH_BATCH < parsedStudents.length) {
+                await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+            }
+        }
+
+        // ── PHASE 3: Sequential player_id generation + DB insert ──────────────
+        // Player ID generation is deliberately kept sequential to guarantee
+        // the DB sequence (P1001, P1002 …) is assigned without gaps or races.
+        // A 30ms yield between inserts prevents Supabase connection pool saturation
+        // and ensures concurrent individual registrations always find a free slot.
+        for (const { row, fName, lName, parsedDob, hashedPassword } of hashedStudents) {
+            const { data: newPlayerId, error: pidError } = await supabaseAdmin.rpc("get_next_player_id");
             if (pidError || !newPlayerId) {
                 console.error("Failed to generate player_id:", pidError);
-                failed.push({
-                    row: row,
-                    errorField: null,
-                    reason: `Failed to generate a Player ID for system registration.`
-                });
+                failed.push({ row, errorField: null, reason: "Failed to generate a Player ID for system registration." });
                 continue;
             }
 
-            // ── Build the student object ────────────────────────────────────
             const student = {
                 id: crypto.randomUUID(),
                 player_id: newPlayerId,
@@ -188,9 +233,9 @@ export const finalizeBulkImport = async (req, res) => {
                 last_name: lName || null,
                 name: `${fName} ${lName}`.trim() || null,
                 email: row.email || row.Email || null,
-                mobile: row.mobile ? String(row.mobile).replace(/\D/g, '') : null,
-                aadhaar: row.aadhaar || row.Aadhaar || row["Aadhaar Number"]
-                    ? String(row.aadhaar || row.Aadhaar || row["Aadhaar Number"]).replace(/\D/g, '')
+                mobile: row.mobile ? String(row.mobile).replace(/\D/g, "") : null,
+                aadhaar: (row.aadhaar || row.Aadhaar || row["Aadhaar Number"])
+                    ? String(row.aadhaar || row.Aadhaar || row["Aadhaar Number"]).replace(/\D/g, "")
                     : null,
                 dob: parsedDob,
                 gender: row.gender || row.Gender || null,
@@ -199,66 +244,47 @@ export const finalizeBulkImport = async (req, res) => {
                 state: row.state || row.State || null,
                 pincode: row.pincode ? String(row.pincode) : null,
                 country: row.country || row.Country || null,
-                password: password,        // Bcrypt-hashed DDMMYYYY, same as manual registration
-                role: 'player',
-                verification: 'verified',  // Superadmin already pre-approved
+                password: hashedPassword,
+                role: "player",
+                verification: "verified",
                 institute_name: resolvedInstituteName
             };
 
-            // ── Attempt DB Insert ───────────────────────────────────────────
-            const { error: insertError } = await supabaseAdmin
-                .from("users")
-                .insert(student);
+            const { error: insertError } = await supabaseAdmin.from("users").insert(student);
+
+            // 30ms yield after each insert — lets other pending DB requests (individual
+            // player registrations) acquire Supabase connection pool slots between inserts.
+            await new Promise(resolve => setTimeout(resolve, 30));
 
             if (insertError) {
                 let reason = insertError.message;
                 let errorField = null;
+                const msg = insertError.message?.toLowerCase() || "";
 
-                const errorMsg = insertError.message?.toLowerCase() || '';
-                if (errorMsg.includes("duplicate key value") || insertError.code === '23505') {
-                    if (errorMsg.includes("email")) {
-                        reason = "Email already exists in the users table.";
-                        errorField = "email";
-                    } else if (errorMsg.includes("mobile")) {
-                        reason = "Mobile number already exists in the users table.";
-                        errorField = "mobile";
-                    } else if (errorMsg.includes("aadhaar")) {
-                        reason = "Aadhaar number already exists in the users table.";
-                        errorField = "aadhaar";
-                    } else {
-                        reason = "Duplicate unique field already exists.";
-                    }
+                if (msg.includes("duplicate key value") || insertError.code === "23505") {
+                    if (msg.includes("email")) { reason = "Email already exists in the users table."; errorField = "email"; }
+                    else if (msg.includes("mobile")) { reason = "Mobile number already exists in the users table."; errorField = "mobile"; }
+                    else if (msg.includes("aadhaar")) { reason = "Aadhaar number already exists in the users table."; errorField = "aadhaar"; }
+                    else { reason = "Duplicate unique field already exists."; }
                 }
 
-                failed.push({
-                    row: row,
-                    errorField: errorField,
-                    reason: reason
-                });
+                failed.push({ row, errorField, reason });
             } else {
-                successful.push({
-                    first_name: student.first_name,
-                    email: student.email
-                });
+                successful.push({ first_name: student.first_name, email: student.email });
             }
-        } // end of for (const row of rawStudents)
+        }
 
-        // DELETE the approval record so they can't reuse it
-        await supabaseAdmin
-            .from("institute_approvals")
-            .delete()
-            .eq("id", approval.id);
+        // DELETE the approval record so it cannot be reused
+        await supabaseAdmin.from("institute_approvals").delete().eq("id", approval.id);
 
         return res.status(200).json({
             success: true,
             message: failed.length > 0
                 ? "Import finished. Some records require correction."
                 : "Import finished successfully.",
-            results: {
-                successful,
-                failed
-            }
+            results: { successful, failed }
         });
+
     } catch (err) {
         console.error("FINALIZE BULK IMPORT ERROR:", err);
         return res.status(500).json({ success: false, message: "Failed to finalize bulk import: " + err.message });
