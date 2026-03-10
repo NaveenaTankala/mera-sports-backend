@@ -98,6 +98,7 @@ export const uploadMedia = async (req, res) => {
         url: row.file_url,
         name: row.file_name,
         type: row.file_type,
+        size: row.file_size,
       },
     });
   } catch (err) {
@@ -131,6 +132,7 @@ export const getMedia = async (req, res) => {
         url: m.file_url,
         name: m.file_name,
         type: m.file_type,
+        size: m.file_size,
       })),
     });
   } catch (err) {
