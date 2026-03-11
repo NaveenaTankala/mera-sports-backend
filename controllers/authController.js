@@ -447,7 +447,7 @@ export const loginPlayer = async (req, res) => {
         }
         if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
-        const token = jwt.sign({ id: user.id, role: 'player' }, process.env.JWT_SECRET, { expiresIn: "7d" });
+        const token = jwt.sign({ id: user.id, role: 'player' }, process.env.JWT_SECRET, { expiresIn: "30d" });
 
         res.json({
             success: true,
@@ -657,8 +657,15 @@ export const loginAdmin = async (req, res) => {
         if (error || !user) return res.status(401).json({ message: "Invalid credentials" });
         if (user.role !== 'admin' && user.role !== 'superadmin') return res.status(403).json({ message: "Access Denied." });
 
-        // Google OAuth admins use placeholder password — plain text comparison
-        if (user.password !== password) return res.status(401).json({ message: "Invalid credentials" });
+        // Compare password — try bcrypt first (regular admins), fall back to plain comparison for Google OAuth placeholder passwords
+        let adminPasswordMatch = false;
+        try {
+            adminPasswordMatch = await bcrypt.compare(password, user.password);
+        } catch {
+            // stored value is not a bcrypt hash (Google OAuth placeholder) — plain-text fallback
+            adminPasswordMatch = user.password === password;
+        }
+        if (!adminPasswordMatch) return res.status(401).json({ message: "Invalid credentials" });
 
         // Verification Checks — block only rejected admins
         // Pending admins get a token so frontend can show PendingApproval page
