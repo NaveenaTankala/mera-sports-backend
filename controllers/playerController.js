@@ -229,7 +229,11 @@ export const checkPassword = async (req, res) => {
         const { currentPassword } = req.body;
         if (!currentPassword) return res.status(400).json({ message: "Password required" });
         const { data: user } = await supabaseAdmin.from("users").select("password").eq("id", req.user.id).maybeSingle();
-        if (!user || user.password !== currentPassword) return res.status(401).json({ correct: false, message: "Incorrect password" });
+        if (!user) return res.status(401).json({ correct: false, message: "User not found" });
+
+        const isMatch = await bcrypt.compare(currentPassword, user.password);
+        if (!isMatch) return res.status(401).json({ correct: false, message: "Incorrect password" });
+        
         res.json({ correct: true });
     } catch (err) { res.status(500).json({ message: "Server error" }); }
 };

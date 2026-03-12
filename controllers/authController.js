@@ -478,12 +478,13 @@ export const registerAdmin = async (req, res) => {
         if (existing) return res.status(400).json({ message: "Admin already exists." });
 
         const newUserId = crypto.randomUUID();
+        const hashedPassword = await bcrypt.hash(password, 12);
         const { error } = await supabaseAdmin.from("users").insert({
             id: newUserId,
             name,
             email,
             mobile,
-            password: password,
+            password: hashedPassword,
             role: 'admin',
             verification: 'pending'
         });
@@ -657,8 +658,9 @@ export const loginAdmin = async (req, res) => {
         if (error || !user) return res.status(401).json({ message: "Invalid credentials" });
         if (user.role !== 'admin' && user.role !== 'superadmin') return res.status(403).json({ message: "Access Denied." });
 
-        // Google OAuth admins use placeholder password — plain text comparison
-        if (user.password !== password) return res.status(401).json({ message: "Invalid credentials" });
+        // Admin password comparison
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
         // Verification Checks — block only rejected admins
         // Pending admins get a token so frontend can show PendingApproval page
