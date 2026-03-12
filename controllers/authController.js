@@ -447,7 +447,8 @@ export const loginPlayer = async (req, res) => {
         }
         if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
-        const token = jwt.sign({ id: user.id, role: 'player' }, process.env.JWT_SECRET, { expiresIn: "30d" });
+        const playerTokenExpiresIn = process.env.PLAYER_JWT_EXPIRES_IN || "7d";
+        const token = jwt.sign({ id: user.id, role: 'player' }, process.env.JWT_SECRET, { expiresIn: playerTokenExpiresIn });
 
         res.json({
             success: true,
@@ -657,13 +658,16 @@ export const loginAdmin = async (req, res) => {
         if (error || !user) return res.status(401).json({ message: "Invalid credentials" });
         if (user.role !== 'admin' && user.role !== 'superadmin') return res.status(403).json({ message: "Access Denied." });
 
-        // Compare password — try bcrypt first (regular admins), fall back to plain comparison for Google OAuth placeholder passwords
+        // Compare password using bcrypt only.
+        // If stored value is not a bcrypt hash (OAuth bootstrap account), enforce OAuth login.
         let adminPasswordMatch = false;
         try {
             adminPasswordMatch = await bcrypt.compare(password, user.password);
-        } catch {
-            // stored value is not a bcrypt hash (Google OAuth placeholder) — plain-text fallback
-            adminPasswordMatch = user.password === password;
+        } catch (compareErr) {
+            console.error("ADMIN PASSWORD COMPARE ERROR:", compareErr?.message || compareErr);
+            return res.status(401).json({
+                message: "Password login unavailable for this account. Please sign in with Google."
+            });
         }
         if (!adminPasswordMatch) return res.status(401).json({ message: "Invalid credentials" });
 
