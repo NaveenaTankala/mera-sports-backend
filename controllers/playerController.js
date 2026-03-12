@@ -78,13 +78,13 @@ export const getPlayerDashboard = async (req, res) => {
             const familyIds = headRelations.map(r => r.of_player_id);
             const { data: familyUsers } = await supabaseAdmin
                 .from("users")
-                .select("id, player_id, name, dob, age, gender, email, aadhaar, apartment, street, city, state, pincode, country")
+                .select("id, player_id, name, dob, age, gender, email, aadhaar, apartment, street, city, state, pincode, country, photos")
                 .in("id", familyIds);
 
             if (familyUsers) {
                 familyMembers = familyUsers.map(u => {
                     const rel = headRelations.find(r => r.of_player_id === u.id);
-                    return { ...u, relation: rel?.relation || "" };
+                    return { ...u, relation: rel?.relation || "", profile_picture: u.photos };
                 });
             }
         }
@@ -94,7 +94,7 @@ export const getPlayerDashboard = async (req, res) => {
             const headId = memberRelation.head_player_id;
             const { data: headUser } = await supabaseAdmin
                 .from("users")
-                .select("id, player_id, name, dob, age, gender, email, aadhaar, apartment, street, city, state, pincode, country")
+                .select("id, player_id, name, dob, age, gender, email, aadhaar, apartment, street, city, state, pincode, country, photos")
                 .eq("id", headId)
                 .maybeSingle();
 
@@ -104,7 +104,7 @@ export const getPlayerDashboard = async (req, res) => {
                     const map = { 'Child': 'Parent', 'Parent': 'Child', 'Spouse': 'Spouse', 'Sibling': 'Sibling' };
                     return map[rel] || 'Family';
                 };
-                familyMembers.push({ ...headUser, relation: reverseRelation(memberRelation.relation) });
+                familyMembers.push({ ...headUser, relation: reverseRelation(memberRelation.relation), profile_picture: headUser.photos });
             }
 
             // Also show siblings (other family members of the same head, excluding self)
@@ -118,7 +118,7 @@ export const getPlayerDashboard = async (req, res) => {
                 const siblingIds = siblingRelations.map(r => r.of_player_id);
                 const { data: siblingUsers } = await supabaseAdmin
                     .from("users")
-                    .select("id, player_id, name, dob, age, gender, email, aadhaar, apartment, street, city, state, pincode, country")
+                    .select("id, player_id, name, dob, age, gender, email, aadhaar, apartment, street, city, state, pincode, country, photos")
                     .in("id", siblingIds);
 
                 if (siblingUsers) {
@@ -127,7 +127,7 @@ export const getPlayerDashboard = async (req, res) => {
                         // Siblings share the same head — show relation context
                         const headRelLabel = rel?.relation || "";
                         const siblingLabel = headRelLabel === 'Child' ? 'Sibling' : headRelLabel === 'Spouse' ? 'Parent' : 'Family';
-                        familyMembers.push({ ...u, relation: siblingLabel });
+                        familyMembers.push({ ...u, relation: siblingLabel, profile_picture: u.photos });
                     });
                 }
             }
