@@ -3,6 +3,7 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { supabaseAdmin } from "../config/supabaseClient.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
+import { getNextPlayerId } from "../utils/playerIdHelper.js";
 
 // GET /api/player/dashboard
 export const getPlayerDashboard = async (req, res) => {
@@ -409,8 +410,13 @@ export const addFamilyMember = async (req, res) => {
         const password = await bcrypt.hash(plainPassword, 12);
 
         // Generate player_id
-        const { data: newPlayerId, error: idError } = await supabaseAdmin.rpc('get_next_player_id');
-        if (idError || !newPlayerId) throw new Error("Failed to generate Player ID");
+        let newPlayerId;
+        try {
+            newPlayerId = await getNextPlayerId();
+        } catch (idError) {
+            console.error("Family Member ID Generation Error:", idError);
+            throw new Error("Failed to generate Player ID");
+        }
 
         // Split name
         const nameParts = name.trim().split(/\s+/);

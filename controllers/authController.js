@@ -11,6 +11,7 @@ import {
 } from "../services/otpService.js";
 import { sendRegistrationSuccessEmail } from "../utils/mailer.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
+import { getNextPlayerId } from "../utils/playerIdHelper.js";
 
 /* ================= FORGOT PASSWORD ================= */
 
@@ -354,9 +355,11 @@ export const registerPlayer = async (req, res) => {
         let photoUrl = await uploadBase64(photos, 'player-photos', 'profiles');
 
         // 5. Generate Player ID
-        const { data: newPlayerId, error: idError } = await supabaseAdmin.rpc('get_next_player_id');
-        if (idError || !newPlayerId) {
-            console.error("RPC Error:", idError);
+        let newPlayerId;
+        try {
+            newPlayerId = await getNextPlayerId();
+        } catch (idError) {
+            console.error("Player ID Generation Error:", idError);
             throw new Error("Failed to generate Player ID.");
         }
 
