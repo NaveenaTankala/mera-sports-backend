@@ -1254,6 +1254,17 @@ export const updateMatchScore = async (req, res) => {
                         console.error("Failed to fetch setsPerMatch from bracket round:", err);
                     }
 
+                    // Fallback: if bracket round config didn't provide setsPerMatch (e.g., LEAGUE matches),
+                    // use the request body setsPerMatch or infer from actual score data
+                    if (categorySetsPerMatch === 1 && Array.isArray(finalScore.sets) && finalScore.sets.length > 1) {
+                        const bodySetsPerMatch = parseInt(req.body?.setsPerMatch);
+                        if (!isNaN(bodySetsPerMatch) && bodySetsPerMatch > 1) {
+                            categorySetsPerMatch = bodySetsPerMatch;
+                        } else {
+                            categorySetsPerMatch = finalScore.sets.length;
+                        }
+                    }
+
                     // Calculate set wins and total points
                     let player1SetsWon = 0;
                     let player2SetsWon = 0;
@@ -1463,6 +1474,15 @@ export const finalizeRoundMatches = async (req, res) => {
             console.error("[Finalize] Exception fetching bracket:", err);
         }
 
+        // Fallback: if bracket config didn't provide setsPerMatch (e.g., LEAGUE matches),
+        // use the request body setsPerMatch
+        if (categorySetsPerMatch === 1) {
+            const bodySetsPerMatch = parseInt(req.body?.setsPerMatch);
+            if (!isNaN(bodySetsPerMatch) && bodySetsPerMatch > 1) {
+                categorySetsPerMatch = bodySetsPerMatch;
+            }
+        }
+
         // Helper to extract valid player id (never return empty object) - same as in updateMatchScore
         const getPlayerId = (player) => {
             if (!player) return null;
@@ -1611,7 +1631,9 @@ export const finalizeRoundMatches = async (req, res) => {
                 let player2SetsWon = 0;
                 let player1TotalPoints = 0;
                 let player2TotalPoints = 0;
-                const setsToWin = Math.ceil(categorySetsPerMatch / 2);
+                // Per-match fallback: if categorySetsPerMatch is still 1 but match has more sets, use actual count
+                const effectiveSetsPerMatch = (categorySetsPerMatch === 1 && sets.length > 1) ? sets.length : categorySetsPerMatch;
+                const setsToWin = Math.ceil(effectiveSetsPerMatch / 2);
                 for (const set of sets) {
                     const p1Score = parseInt(set.player1 || 0);
                     const p2Score = parseInt(set.player2 || 0);
