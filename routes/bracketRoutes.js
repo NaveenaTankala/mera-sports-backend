@@ -9,6 +9,7 @@ import {
     finalizeByes,
     getCategoryDraw,
     initBracket,
+    notifyBracketPromotions,
     publishCategoryDraw,
     randomizeRound1Byes,
     recordResult,
@@ -93,5 +94,9 @@ router.patch("/events/:id/categories/bracket/round1/assign-bye", verifyAdmin, as
 // Finalize BYEs
 router.post("/events/:id/categories/:categoryId/bracket/finalize-byes", verifyAdmin, finalizeByes);
 router.post("/events/:id/categories/bracket/finalize-byes", verifyAdmin, finalizeByes);
+
+// Send promotion notifications
+router.post("/events/:id/categories/:categoryId/bracket/notify-promotions", verifyAdmin, notifyBracketPromotions);
+router.post("/events/:id/categories/bracket/notify-promotions", verifyAdmin, notifyBracketPromotions);
 
 export default router;
