@@ -14,7 +14,8 @@ import {
     verifyRegistrationOtp,
     verifyVerificationOtp,
     registerInstitute,
-    loginInstitute
+    loginInstitute,
+    resetPassword
 } from "../controllers/authController.js";
 
 const router = express.Router();
@@ -31,6 +32,9 @@ router.post("/verify-mobile-otp", verifyMobileRegistrationOtp);
 
 /* ================= CHECK CONFLICT ================= */
 router.post("/check-conflict", checkUserConflict);
+
+/* ================= FORGOT PASSWORD ================= */
+router.post("/forgot-password/reset", resetPassword);
 
 /* ================= PLAYER AUTH ================= */
 router.post("/register-player", registerPlayer);
