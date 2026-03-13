@@ -69,6 +69,9 @@ router.post('/sync', async (req, res) => {
                 });
             }
 
+            const previous_login = existingUser.last_login || null;
+            const last_login = new Date().toISOString();
+
             // UPDATE ONLY GOOGLE FIELDS (Preserve Mobile/DOB and ROLE)
             // DO NOT OVERWRITE ROLE TO 'admin'
             const { data: updatedUser, error: updateError } = await supabaseAdmin
@@ -79,7 +82,9 @@ router.post('/sync', async (req, res) => {
                     name: fullName,
                     photos: photoUrl,
                     avatar: photoUrl,
-                    google_id: googleId
+                    google_id: googleId,
+                    previous_login,
+                    last_login
                     // role: 'admin'  <-- REMOVED: Never overwrite role
                 })
                 .eq('id', existingUser.id) // Use the FOUND ID, not user.id
@@ -106,6 +111,7 @@ router.post('/sync', async (req, res) => {
                 google_id: googleId,
                 role: 'admin', // ONLY set for NEW users
                 verification: 'pending', // Pending SuperAdmin approval
+                last_login: new Date().toISOString(),
 
                 // ROBUST DUMMY DATA STRATEGY
                 mobile: `9${Date.now().toString().slice(-9)}`,
@@ -162,7 +168,9 @@ router.post('/sync', async (req, res) => {
             email: finalUser.email,
             role: finalUser.role,
             avatar: finalUser.photos || finalUser.avatar,
-            verification: finalUser.verification
+            verification: finalUser.verification,
+            last_login: finalUser.last_login,
+            previous_login: finalUser.previous_login
         };
         res.json({ success: true, user: userPayload, token: backendToken });
 
