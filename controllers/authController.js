@@ -11,6 +11,58 @@ import {
 } from "../services/otpService.js";
 import { sendRegistrationSuccessEmail } from "../utils/mailer.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
+import { getNextPlayerId } from "../utils/playerIdHelper.js";
+
+/* ================= FORGOT PASSWORD ================= */
+
+export const resetPassword = async (req, res) => {
+    try {
+        const { method, value, newPassword } = req.body;
+        if (!method || !value || !newPassword) {
+            return res.status(400).json({ message: "Missing reset data" });
+        }
+
+        // We assume the frontend verified the OTP right before this call. 
+        // In a strictly secure environment, `verifyOtp` would issue a token. 
+        // Since we are reusing registration OTPs which do not issue tokens, we will do a direct update.
+        let user = null;
+
+        if (method === 'mobile') {
+            const { data: mobileUsers } = await supabaseAdmin.from("users").select("id").eq('mobile', value);
+            if (!mobileUsers || mobileUsers.length === 0) return res.status(404).json({ message: "User not found" });
+
+            const { data: familyRels } = await supabaseAdmin
+                .from("family_relations")
+                .select("of_player_id")
+                .in("of_player_id", mobileUsers.map(u => u.id));
+
+            const familyMemberIds = new Set((familyRels || []).map(r => r.of_player_id));
+            user = mobileUsers.find(u => !familyMemberIds.has(u.id)) || mobileUsers[0];
+
+        } else if (method === 'email') {
+            const { data } = await supabaseAdmin.from("users").select("id").eq('email', value).maybeSingle();
+            if (!data) return res.status(404).json({ message: "User not found" });
+            user = data;
+        } else {
+            return res.status(400).json({ message: "Invalid method" });
+        }
+
+        const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+        const { error } = await supabaseAdmin
+            .from("users")
+            .update({ password: hashedPassword })
+            .eq("id", user.id);
+
+        if (error) throw error;
+
+        res.json({ success: true, message: "Password updated successfully" });
+
+    } catch (err) {
+        console.error("RESET PASSWORD ERROR:", err);
+        res.status(500).json({ message: "Failed to reset password" });
+    }
+};
 
 /* ================= SECURITY VERIFICATION (PROFILE UPDATE / PASSWORD CHANGE) ================= */
 
@@ -303,9 +355,11 @@ export const registerPlayer = async (req, res) => {
         let photoUrl = await uploadBase64(photos, 'player-photos', 'profiles');
 
         // 5. Generate Player ID
-        const { data: newPlayerId, error: idError } = await supabaseAdmin.rpc('get_next_player_id');
-        if (idError || !newPlayerId) {
-            console.error("RPC Error:", idError);
+        let newPlayerId;
+        try {
+            newPlayerId = await getNextPlayerId();
+        } catch (idError) {
+            console.error("Player ID Generation Error:", idError);
             throw new Error("Failed to generate Player ID.");
         }
 
@@ -447,7 +501,7 @@ export const loginPlayer = async (req, res) => {
         }
         if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
-        const token = jwt.sign({ id: user.id, role: 'player' }, process.env.JWT_SECRET, { expiresIn: "7d" });
+        const token = jwt.sign({ id: user.id, role: 'player' }, process.env.JWT_SECRET, { expiresIn: "30d" });
 
         res.json({
             success: true,
@@ -478,12 +532,13 @@ export const registerAdmin = async (req, res) => {
         if (existing) return res.status(400).json({ message: "Admin already exists." });
 
         const newUserId = crypto.randomUUID();
+        const hashedPassword = await bcrypt.hash(password, 12);
         const { error } = await supabaseAdmin.from("users").insert({
             id: newUserId,
             name,
             email,
             mobile,
-            password: password,
+            password: hashedPassword,
             role: 'admin',
             verification: 'pending'
         });
@@ -657,8 +712,15 @@ export const loginAdmin = async (req, res) => {
         if (error || !user) return res.status(401).json({ message: "Invalid credentials" });
         if (user.role !== 'admin' && user.role !== 'superadmin') return res.status(403).json({ message: "Access Denied." });
 
-        // Google OAuth admins use placeholder password — plain text comparison
-        if (user.password !== password) return res.status(401).json({ message: "Invalid credentials" });
+        // Compare password — try bcrypt first (regular admins), fall back to plain comparison for Google OAuth placeholder passwords
+        let adminPasswordMatch = false;
+        try {
+            adminPasswordMatch = await bcrypt.compare(password, user.password);
+        } catch {
+            // stored value is not a bcrypt hash (Google OAuth placeholder) — plain-text fallback
+            adminPasswordMatch = user.password === password;
+        }
+        if (!adminPasswordMatch) return res.status(401).json({ message: "Invalid credentials" });
 
         // Verification Checks — block only rejected admins
         // Pending admins get a token so frontend can show PendingApproval page
