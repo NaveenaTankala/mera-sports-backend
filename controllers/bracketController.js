@@ -2680,20 +2680,33 @@ export const deleteCategoryBracket = async (req, res) => {
             return res.status(400).json({ message: "Event ID and Category required" });
         }
 
-        let query = supabaseAdmin
+        const { data: allBrackets, error: fetchError } = await supabaseAdmin
             .from("event_brackets")
             .select("*")
             .eq("event_id", eventId)
             .eq("mode", "BRACKET");
 
-        if (categoryId && isUuid(categoryId)) {
-            query = query.eq("category_id", categoryId);
-        } else {
-            query = query.eq("category", categoryLabel);
-        }
-
-        const { data: brackets, error: fetchError } = await query;
         if (fetchError) throw fetchError;
+        const normalizedParamId = String(categoryId || "").trim();
+        const normalizedLabel = String(categoryLabel || "").trim().toLowerCase();
+
+        const brackets = (allBrackets || []).filter((row) => {
+            if (categoryId && isUuid(categoryId)) {
+                return String(row.category_id || "").trim() === normalizedParamId;
+            }
+
+            const rowCategory = String(row.category || "").trim().toLowerCase();
+            const sourceCategoryId = String(
+                row?.bracket_data?.sourceCategoryId ||
+                row?.draw_data?.sourceCategoryId ||
+                ""
+            ).trim();
+
+            if (normalizedLabel && rowCategory === normalizedLabel) return true;
+            if (normalizedParamId && sourceCategoryId === normalizedParamId) return true;
+            return false;
+        });
+
         if (!brackets || brackets.length === 0) {
             return res.status(404).json({ message: "Bracket not found" });
         }
