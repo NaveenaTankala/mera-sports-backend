@@ -230,6 +230,13 @@ export const deleteAdmin = async (req, res) => {
         const { error: unassignError } = await supabaseAdmin.from('events').update({ assigned_to: null }).eq('assigned_to', targetAdminId);
         if (unassignError) throw unassignError;
 
+        // 1.1 Remove multi-admin assignments
+        const { error: assignmentDeleteError } = await supabaseAdmin
+            .from('event_admin_assignments')
+            .delete()
+            .eq('admin_id', targetAdminId);
+        if (assignmentDeleteError && assignmentDeleteError.code !== '42P01') throw assignmentDeleteError;
+
         // 2. Transfer events
         const { error: transferError } = await supabaseAdmin.from('events').update({ created_by: superAdminId }).eq('created_by', targetAdminId);
         if (transferError) throw transferError;
@@ -480,7 +487,7 @@ export const getAssignments = async (req, res) => {
 
         if (adminError) throw adminError;
 
-        // 2. Fetch all events that are assigned to someone
+        // 2. Fetch all events that are assigned to someone (legacy single-assignment)
         const { data: eventsData, error: eventsError } = await supabaseAdmin
             .from('events')
             .select('*')
@@ -488,10 +495,20 @@ export const getAssignments = async (req, res) => {
 
         if (eventsError) throw eventsError;
 
-        // 3. Collect distinct user IDs of the Superadmins who did the assigning
+        // 2.1 Fetch all multi-admin assignment rows (if table exists)
+        const { data: assignmentRows, error: assignmentRowsError } = await supabaseAdmin
+            .from('event_admin_assignments')
+            .select('event_id, admin_id, assigned_by, created_at');
+
+        if (assignmentRowsError && assignmentRowsError.code !== '42P01') throw assignmentRowsError;
+
+        // 3. Collect distinct user IDs of assigners
         const assignedByIds = new Set();
         (eventsData || []).forEach(event => {
             if (event.assigned_by) assignedByIds.add(event.assigned_by);
+        });
+        (assignmentRows || []).forEach((row) => {
+            if (row.assigned_by) assignedByIds.add(row.assigned_by);
         });
 
         // 4. Fetch those assigning Superadmins to get their names
@@ -509,23 +526,63 @@ export const getAssignments = async (req, res) => {
             }
         }
 
-        // 5. Build the restructured payload grouped by each Admin
+        // 5. Build helper maps for assigned events grouped by admin
+        const groupedByAdmin = new Map();
+
+        (eventsData || []).forEach((event) => {
+            if (!event.assigned_to) return;
+            if (!groupedByAdmin.has(event.assigned_to)) groupedByAdmin.set(event.assigned_to, []);
+
+            groupedByAdmin.get(event.assigned_to).push({
+                event_id: event.id,
+                event_name: event.name || 'Untitled Event',
+                assigned_by_id: event.assigned_by || null,
+                assigned_by_name: event.assigned_by ? (assignedByMap[event.assigned_by] || 'System') : 'System',
+                assigned_at: event.updated_at || event.created_at || new Date().toISOString(),
+            });
+        });
+
+        // Build event details map for assignment rows without relying on PostgREST relation embedding
+        const assignmentEventIds = Array.from(new Set((assignmentRows || []).map((row) => row.event_id).filter(Boolean)));
+        const assignmentEventMap = new Map();
+
+        if (assignmentEventIds.length > 0) {
+            const { data: assignmentEvents, error: assignmentEventsError } = await supabaseAdmin
+                .from('events')
+                .select('id, name, created_at')
+                .in('id', assignmentEventIds);
+
+            if (assignmentEventsError) throw assignmentEventsError;
+
+            (assignmentEvents || []).forEach((eventRow) => {
+                assignmentEventMap.set(eventRow.id, eventRow);
+            });
+        }
+
+        (assignmentRows || []).forEach((row) => {
+            const adminId = row.admin_id;
+            const eventDetails = assignmentEventMap.get(row.event_id) || {};
+            if (!adminId || !eventDetails?.id) return;
+
+            if (!groupedByAdmin.has(adminId)) groupedByAdmin.set(adminId, []);
+            const existing = groupedByAdmin.get(adminId);
+
+            // Avoid duplicate rows if legacy and join-table both contain same mapping
+            if (existing.some((event) => event.event_id === eventDetails.id)) return;
+
+            existing.push({
+                event_id: eventDetails.id,
+                event_name: eventDetails.name || 'Untitled Event',
+                assigned_by_id: row.assigned_by || null,
+                assigned_by_name: row.assigned_by ? (assignedByMap[row.assigned_by] || 'System') : 'System',
+                assigned_at: row.created_at || eventDetails.created_at || new Date().toISOString(),
+            });
+        });
+
+        // 6. Build the restructured payload grouped by each Admin
         const formattedData = (adminUsers || []).map(admin => {
-
-            // Find all events assigned specifically to THIS admin
-            const adminEvents = (eventsData || [])
-                .filter(event => event.assigned_to === admin.id)
-                .map(event => {
-                    const assignerName = event.assigned_by ? assignedByMap[event.assigned_by] : null;
-
-                    return {
-                        event_id: event.id,
-                        event_name: event.name || "Untitled Event",
-                        assigned_by_id: event.assigned_by || null,
-                        assigned_by_name: assignerName || "System",
-                        assigned_at: event.updated_at || event.created_at || new Date().toISOString()
-                    };
-                });
+            const adminEvents = (groupedByAdmin.get(admin.id) || [])
+                .sort((a, b) => new Date(b.assigned_at).getTime() - new Date(a.assigned_at).getTime());
 
             return {
                 admin_id: admin.id,
