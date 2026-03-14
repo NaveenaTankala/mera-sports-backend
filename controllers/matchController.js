@@ -9,13 +9,47 @@ const isUuid = (str) => {
 
 /** Normalize round name for consistent matching. ALWAYS use for any round_name comparison. */
 const normalizeRoundName = (s) => String(s ?? "").trim().toLowerCase();
+const MAX_SETS_PER_MATCH = 9;
+
+const parseSetsPerMatch = (rawValue, fallback = 1) => {
+    // Clamp the fallback itself so callers can't accidentally pass an out-of-range default.
+    const safeFallback = Number.isInteger(fallback) && fallback >= 1 && fallback <= MAX_SETS_PER_MATCH
+        ? fallback
+        : 1;
+    const parsed = Number.parseInt(String(rawValue ?? ""), 10);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_SETS_PER_MATCH) return safeFallback;
+    return parsed;
+};
+
+/**
+ * Resolve the definitive sets-per-match count for a category/match.
+ *
+ * Priority order:
+ *  1. `configuredSets` — value stored in the bracket round config (highest priority)
+ *  2. `requestSets`    — raw value sent in the request body
+ *  3. `observedSetsLength` — number of sets already recorded on the match
+ *  4. 1 (minimum valid fallback)
+ *
+ * @param {Object} params
+ * @param {number} [params.configuredSets=1]      - Sets count from the bracket round config.
+ * @param {number|string} [params.requestSets]    - Raw sets value from the request body (will be parsed/clamped).
+ * @param {number} [params.observedSetsLength=0]  - Count of set entries already present on the match record.
+ * @returns {number} A valid integer in the range [1, MAX_SETS_PER_MATCH].
+ */
+const resolveSetsPerMatch = ({ configuredSets = 1, requestSets, observedSetsLength = 0 }) => {
+    if (configuredSets > 1) return configuredSets;
+    const parsedRequestSets = parseSetsPerMatch(requestSets, 1);
+    if (parsedRequestSets > 1) return parsedRequestSets;
+    if (Number.isInteger(observedSetsLength) && observedSetsLength > 1) return observedSetsLength;
+    return 1;
+};
 
 // Generate Matches from Bracket Data (Knockout)
 export const generateMatchesFromBracket = async (req, res) => {
     const { eventId, categoryId } = req.params;
     const categoryLabel = (req.query && req.query.categoryLabel) || (req.body && req.body.categoryLabel);
     const roundName = (req.query && req.query.roundName) || (req.body && req.body.roundName); // Optional: generate for specific round only
-    const setsPerMatch = req.body?.setsPerMatch; // Sets configuration from round (optional)
+    const setsPerMatch = parseSetsPerMatch(req.body?.setsPerMatch, 1); // Sets configuration from round (optional)
     const winnerMode = req.body?.winnerMode || 'set_based'; // Winner mode: 'set_based', 'score_based', or 'match_based'
 
     try {
@@ -173,7 +207,7 @@ export const generateMatchesFromBracket = async (req, res) => {
         }
 
         // If setsPerMatch is provided, update the round's setsConfig in bracket_data
-        if (setsPerMatch && typeof setsPerMatch === 'number' && setsPerMatch > 0 && roundName) {
+        if (setsPerMatch > 0 && roundName) {
             try {
                 const bracketDataObj = bracketData.bracket_data || bracketData.bracketData || {};
                 const rounds = bracketDataObj.rounds || [];
@@ -1256,14 +1290,11 @@ export const updateMatchScore = async (req, res) => {
 
                     // Fallback: if bracket round config didn't provide setsPerMatch (e.g., LEAGUE matches),
                     // use the request body setsPerMatch or infer from actual score data
-                    if (categorySetsPerMatch === 1 && Array.isArray(finalScore.sets) && finalScore.sets.length > 1) {
-                        const bodySetsPerMatch = parseInt(req.body?.setsPerMatch);
-                        if (!isNaN(bodySetsPerMatch) && bodySetsPerMatch > 1) {
-                            categorySetsPerMatch = bodySetsPerMatch;
-                        } else {
-                            categorySetsPerMatch = finalScore.sets.length;
-                        }
-                    }
+                    categorySetsPerMatch = resolveSetsPerMatch({
+                        configuredSets: categorySetsPerMatch,
+                        requestSets: req.body?.setsPerMatch,
+                        observedSetsLength: Array.isArray(finalScore.sets) ? finalScore.sets.length : 0,
+                    });
 
                     // Calculate set wins and total points
                     let player1SetsWon = 0;
@@ -1476,12 +1507,10 @@ export const finalizeRoundMatches = async (req, res) => {
 
         // Fallback: if bracket config didn't provide setsPerMatch (e.g., LEAGUE matches),
         // use the request body setsPerMatch
-        if (categorySetsPerMatch === 1) {
-            const bodySetsPerMatch = parseInt(req.body?.setsPerMatch);
-            if (!isNaN(bodySetsPerMatch) && bodySetsPerMatch > 1) {
-                categorySetsPerMatch = bodySetsPerMatch;
-            }
-        }
+        categorySetsPerMatch = resolveSetsPerMatch({
+            configuredSets: categorySetsPerMatch,
+            requestSets: req.body?.setsPerMatch,
+        });
 
         // Helper to extract valid player id (never return empty object) - same as in updateMatchScore
         const getPlayerId = (player) => {

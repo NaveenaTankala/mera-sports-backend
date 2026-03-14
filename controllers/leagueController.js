@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "../config/supabaseClient.js";
+import { createNotification } from "../services/notificationService.js";
 
 // Simple UUID checker (kept in sync with other controllers)
 const isUuid = (str) => {
@@ -250,6 +251,203 @@ export const saveLeagueConfig = async (req, res) => {
     } catch (err) {
         console.error(`🚨 SaveLeagueConfig ERROR: ${err.message || err.code || err}`);
         return res.status(500).json({ success: false, message: err.message || "Failed to save league config", errorCode: err.code });
+    }
+};
+
+/**
+ * Send league promotion notifications to promoted players/team members.
+ * POST /api/admin/events/:id/categories/:categoryId/league/notify-promotions
+ */
+export const notifyLeaguePromotions = async (req, res) => {
+    try {
+        const { id: eventId, categoryId } = req.params;
+        const {
+            categoryLabel,
+            completedRoundName,
+            nextRoundName,
+            promotionType,
+            promotions,
+        } = req.body || {};
+
+        if (!eventId) {
+            return res.status(400).json({ success: false, message: "Event ID required" });
+        }
+
+        if (!Array.isArray(promotions) || promotions.length === 0) {
+            return res.json({ success: true, notified: 0, duplicates: 0 });
+        }
+
+        // Sanitize variable segments so colons (our delimiter) don't corrupt the key.
+        const sanitizeSegment = (s) => String(s).replace(/:/g, "-");
+        const categoryKey = sanitizeSegment(String(categoryId || categoryLabel || "unknown-category").trim());
+        const safeCompletedRound = sanitizeSegment(String(completedRoundName || "League Stage").trim());
+        const safeNextRound = sanitizeSegment(String(nextRoundName || "Next Round").trim());
+        const safePromotionType = promotionType === "knockout" ? "knockout" : "next-round";
+
+        const formatSummary = (promotion) => {
+            const segments = [];
+            const points = Number(promotion?.points);
+            const played = Number(promotion?.played);
+            const wins = Number(promotion?.wins);
+            const draws = Number(promotion?.draws);
+            const losses = Number(promotion?.losses);
+            const totalScore = Number(promotion?.totalScore);
+            const matchWins = Number(promotion?.matchWins);
+
+            if (Number.isFinite(points)) segments.push(`${points} pts`);
+            if (Number.isFinite(played) || Number.isFinite(wins) || Number.isFinite(draws) || Number.isFinite(losses)) {
+                segments.push(`P${Number.isFinite(played) ? played : 0} W${Number.isFinite(wins) ? wins : 0} D${Number.isFinite(draws) ? draws : 0} L${Number.isFinite(losses) ? losses : 0}`);
+            }
+            if (Number.isFinite(totalScore) && totalScore > 0) segments.push(`Score ${totalScore}`);
+            if (Number.isFinite(matchWins) && matchWins > 0) segments.push(`Match wins ${matchWins}`);
+            return segments.join(" | ");
+        };
+
+        const truncateMembers = (memberNames) => {
+            if (!Array.isArray(memberNames) || memberNames.length === 0) return "";
+            const MAX_NAME_LEN = 30;
+            const names = memberNames
+                .map((name) => {
+                    const s = String(name || "").trim();
+                    return s.length > MAX_NAME_LEN ? s.slice(0, MAX_NAME_LEN) + "…" : s;
+                })
+                .filter(Boolean);
+            if (names.length === 0) return "";
+            if (names.length <= 3) return names.join(", ");
+            return `${names.slice(0, 3).join(", ")} +${names.length - 3} more`;
+        };
+
+        // Request-scoped cache: if the same player_id appears in multiple promotions
+        // within a single request, the DB is only hit once per unique ID.
+        const recipientIdCache = new Map();
+
+        const resolveNotificationUserId = async (rawRecipientId) => {
+            const normalizedId = String(rawRecipientId || "").trim();
+            if (!normalizedId) return null;
+            if (isUuid(normalizedId)) return normalizedId;
+
+            if (recipientIdCache.has(normalizedId)) return recipientIdCache.get(normalizedId);
+
+            const { data: userByPlayerCode, error: playerCodeError } = await supabaseAdmin
+                .from("users")
+                .select("id")
+                .eq("player_id", normalizedId)
+                .limit(1)
+                .maybeSingle();
+
+            if (playerCodeError) {
+                console.error("[notifyLeaguePromotions] User lookup by player_id failed:", playerCodeError);
+            }
+            const resolved = userByPlayerCode?.id && isUuid(String(userByPlayerCode.id))
+                ? String(userByPlayerCode.id)
+                : null;
+
+            recipientIdCache.set(normalizedId, resolved);
+            return resolved;
+        };
+
+        const results = await Promise.allSettled(
+            promotions.map(async (promotion) => {
+                // Guard against null / non-object entries in the promotions array
+                if (!promotion || typeof promotion !== "object") {
+                    return { status: "skipped", sent: 0, duplicates: 0 };
+                }
+
+                const entityId = String(promotion?.entityId || promotion?.playerId || "").trim();
+                const entityName = String(promotion?.entityName || promotion?.playerName || "Player").trim();
+                const sourceGroup = String(promotion?.sourceGroup || "").trim();
+                const destinationGroup = String(promotion?.destinationGroup || "").trim();
+                const sourcePosition = Number(promotion?.sourcePosition);
+                const memberNames = Array.isArray(promotion?.memberNames) ? promotion.memberNames : [];
+                const explicitRecipients = Array.isArray(promotion?.recipientIds)
+                    ? promotion.recipientIds.map((id) => String(id || "").trim()).filter(Boolean)
+                    : [];
+
+                // Use a clearly-named final variable; avoid multiple reassignments
+                const rawFinalRecipientIds = explicitRecipients.length > 0
+                    ? explicitRecipients
+                    : entityId ? [entityId] : [];
+
+                if (rawFinalRecipientIds.length === 0) {
+                    return { status: "skipped" };
+                }
+
+                const dedupeLink = `league-promotion:${eventId}:${categoryKey}:${safeCompletedRound}:${safeNextRound}:${safePromotionType}:${entityId || rawFinalRecipientIds.join(",")}`;
+                const summary = formatSummary(promotion);
+                const placeText = Number.isFinite(sourcePosition) ? `#${sourcePosition}` : "qualified";
+                const groupText = sourceGroup ? `Group ${sourceGroup}` : "the league stage";
+                const destinationText = safePromotionType === "knockout"
+                    ? `the knockout bracket${destinationGroup ? ` (${destinationGroup})` : ""}`
+                    : `${safeNextRound}${destinationGroup ? ` in Group ${destinationGroup}` : ""}`;
+                const teamDetail = truncateMembers(memberNames);
+
+                const title = safePromotionType === "knockout"
+                    ? `🏆 Promoted to Knockout Bracket`
+                    : `🏆 Promoted to ${safeNextRound}`;
+                const message = [
+                    `You finished ${placeText} in ${groupText} and have been promoted to ${destinationText}.`,
+                    summary ? `Standing: ${summary}.` : "",
+                    teamDetail ? `Team members: ${teamDetail}.` : "",
+                    categoryLabel ? `Category: ${categoryLabel}.` : "",
+                ].filter(Boolean).join(" ");
+
+                // Resolve all raw IDs to UUIDs concurrently (avoid sequential awaits in loop)
+                const resolvedIds = await Promise.all(
+                    rawFinalRecipientIds.map(resolveNotificationUserId)
+                );
+                const finalRecipientIds = resolvedIds.filter((id, i) => {
+                    if (!id) console.warn(`[notifyLeaguePromotions] Skipping unresolved recipient: ${rawFinalRecipientIds[i]}`);
+                    return Boolean(id);
+                });
+
+                if (finalRecipientIds.length === 0) {
+                    return { status: "skipped", sent: 0, duplicates: 0 };
+                }
+
+                // Single batched dedupe query instead of one query per recipient
+                const { data: existingRows, error: existingError } = await supabaseAdmin
+                    .from("notifications")
+                    .select("user_id")
+                    .in("user_id", finalRecipientIds)
+                    .eq("link", dedupeLink);
+
+                if (existingError) {
+                    console.error("[notifyLeaguePromotions] Dedupe check failed:", existingError);
+                }
+
+                const alreadyNotified = new Set((existingRows || []).map((r) => r.user_id));
+                const toNotify = finalRecipientIds.filter((id) => !alreadyNotified.has(id));
+                const duplicates = finalRecipientIds.length - toNotify.length;
+
+                const sendResults = await Promise.all(
+                    toNotify.map((recipientId) =>
+                        createNotification(recipientId, title, message, "success", dedupeLink)
+                    )
+                );
+                const sent = sendResults.filter(Boolean).length;
+
+                return { status: sent > 0 ? "sent" : "duplicate", sent, duplicates };
+            })
+        );
+
+        const summary = results.reduce(
+            (acc, result) => {
+                if (result.status !== "fulfilled" || !result.value || typeof result.value !== "object") return acc;
+                acc.notified += Number(result.value.sent) || 0;
+                acc.duplicates += Number(result.value.duplicates) || 0;
+                return acc;
+            },
+            { notified: 0, duplicates: 0 }
+        );
+
+        return res.json({
+            success: true,
+            notified: summary.notified,
+            duplicates: summary.duplicates,
+        });
+    } catch (err) {
+        console.error("notifyLeaguePromotions error:", err);
+        return res.status(500).json({ success: false, message: "Failed to send promotion notifications" });
     }
 };
 

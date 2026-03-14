@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "../config/supabaseClient.js";
 import { validateBracketIntegrity } from "../middleware/bracketValidation.js";
+import { createNotification } from "../services/notificationService.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
 
 // Simple UUID v4 validator (relaxed - checks standard 36-char UUID format)
@@ -2679,20 +2680,33 @@ export const deleteCategoryBracket = async (req, res) => {
             return res.status(400).json({ message: "Event ID and Category required" });
         }
 
-        let query = supabaseAdmin
+        const { data: allBrackets, error: fetchError } = await supabaseAdmin
             .from("event_brackets")
             .select("*")
             .eq("event_id", eventId)
             .eq("mode", "BRACKET");
 
-        if (categoryId && isUuid(categoryId)) {
-            query = query.eq("category_id", categoryId);
-        } else {
-            query = query.eq("category", categoryLabel);
-        }
-
-        const { data: brackets, error: fetchError } = await query;
         if (fetchError) throw fetchError;
+        const normalizedParamId = String(categoryId || "").trim();
+        const normalizedLabel = String(categoryLabel || "").trim().toLowerCase();
+
+        const brackets = (allBrackets || []).filter((row) => {
+            if (categoryId && isUuid(categoryId)) {
+                return String(row.category_id || "").trim() === normalizedParamId;
+            }
+
+            const rowCategory = String(row.category || "").trim().toLowerCase();
+            const sourceCategoryId = String(
+                row?.bracket_data?.sourceCategoryId ||
+                row?.draw_data?.sourceCategoryId ||
+                ""
+            ).trim();
+
+            if (normalizedLabel && rowCategory === normalizedLabel) return true;
+            if (normalizedParamId && sourceCategoryId === normalizedParamId) return true;
+            return false;
+        });
+
         if (!brackets || brackets.length === 0) {
             return res.status(404).json({ message: "Bracket not found" });
         }
@@ -3477,5 +3491,140 @@ export const recordResult = async (req, res) => {
     } catch (err) {
         console.error("RECORD RESULT ERROR:", err);
         return res.status(500).json({ message: "Failed to record result", error: err.message });
+    }
+};
+
+/**
+ * Send promotion notifications to winning players
+ * POST /api/admin/events/:id/categories/:categoryId/bracket/notify-promotions
+ * Body: { categoryLabel, completedRoundName, nextRoundName, promotions: [{winnerId, winnerName, opponentName, score, winnerIsPlayer1}, ...] }
+ */
+export const notifyBracketPromotions = async (req, res) => {
+    try {
+        const { id: eventId, categoryId } = req.params; // Map route params
+        const { categoryLabel, completedRoundName, nextRoundName, promotions } = req.body;
+
+        if (!eventId) {
+            return res.status(400).json({ message: "Event ID required" });
+        }
+
+        if (!Array.isArray(promotions) || promotions.length === 0) {
+            return res.json({ success: true, notified: 0 });
+        }
+
+        const extractScores = (scoreObj) => {
+            if (!scoreObj || typeof scoreObj !== "object") {
+                return { player1: null, player2: null };
+            }
+
+            const toNum = (v) => {
+                const n = Number(v);
+                return Number.isFinite(n) ? n : null;
+            };
+
+            let p1 = toNum(scoreObj.player1 ?? scoreObj.player_a ?? scoreObj.playerA);
+            let p2 = toNum(scoreObj.player2 ?? scoreObj.player_b ?? scoreObj.playerB);
+
+            if ((p1 == null || p2 == null) && Array.isArray(scoreObj.sets) && scoreObj.sets.length > 0) {
+                let setP1 = 0;
+                let setP2 = 0;
+                let hasAny = false;
+
+                for (const set of scoreObj.sets) {
+                    const s1 = toNum(set?.player1 ?? set?.player_a ?? set?.playerA);
+                    const s2 = toNum(set?.player2 ?? set?.player_b ?? set?.playerB);
+                    if (s1 != null || s2 != null) {
+                        hasAny = true;
+                        setP1 += s1 ?? 0;
+                        setP2 += s2 ?? 0;
+                    }
+                }
+
+                if (hasAny) {
+                    p1 = setP1;
+                    p2 = setP2;
+                }
+            }
+
+            return { player1: p1, player2: p2 };
+        };
+
+        // For each promotion, look up the player's registered user id in event_registrations.
+        // NOTE: In this schema, `player_id` stores the user UUID (there is no `user_id` column).
+        const notificationPromises = promotions.map(async (promotion) => {
+            try {
+                const { winnerId, winnerName, opponentName, score, winnerIsPlayer1 } = promotion;
+                if (!winnerId) {
+                    return { status: "skipped" };
+                }
+
+                // Look up player_id from event_registrations (acts as user id for notifications)
+                const { data: registration, error: regError } = await supabaseAdmin
+                    .from("event_registrations")
+                    .select("player_id")
+                    .eq("event_id", eventId)
+                    .eq("player_id", winnerId)
+                    .order("created_at", { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
+
+                if (regError) {
+                    console.error(`[notifyBracketPromotions] Lookup error for player ${winnerId}:`, regError);
+                }
+
+                const userId = registration?.player_id || winnerId;
+                if (!userId) {
+                    return { status: "skipped" };
+                }
+
+                const normalizedScore = extractScores(score);
+                const yourScore = winnerIsPlayer1 ? normalizedScore.player1 : normalizedScore.player2;
+                const opponentScore = winnerIsPlayer1 ? normalizedScore.player2 : normalizedScore.player1;
+                const scoreText = (yourScore != null && opponentScore != null)
+                    ? `${yourScore}–${opponentScore}`
+                    : "N/A";
+
+                const title = `🏆 You're Promoted to the ${nextRoundName}!`;
+                const message = `You won your ${completedRoundName} match against ${opponentName} with a score of ${scoreText}. Get ready for the ${nextRoundName}!`;
+
+                const categoryKey = categoryId || categoryLabel || "unknown-category";
+                const dedupeLink = `promotion:${eventId}:${categoryKey}:${completedRoundName}:${nextRoundName}:${winnerId}`;
+
+                const { data: existingRows, error: existingError } = await supabaseAdmin
+                    .from("notifications")
+                    .select("id")
+                    .eq("user_id", userId)
+                    .eq("link", dedupeLink)
+                    .order("created_at", { ascending: false })
+                    .limit(1);
+
+                if (existingError) {
+                    console.error(`[notifyBracketPromotions] Dedupe check failed for ${winnerId}:`, existingError);
+                }
+
+                if (Array.isArray(existingRows) && existingRows.length > 0) {
+                    return { status: "duplicate", userId };
+                }
+
+                await createNotification(userId, title, message, 'success', dedupeLink);
+                return { status: "sent", userId };
+            } catch (err) {
+                console.error("[notifyBracketPromotions] Error creating notification:", err);
+                return { status: "error" };
+            }
+        });
+
+        const results = await Promise.allSettled(notificationPromises);
+        const fulfilled = results
+            .filter((r) => r.status === "fulfilled")
+            .map((r) => r.value || {});
+
+        const notified = fulfilled.filter((r) => r.status === "sent").length;
+        const duplicates = fulfilled.filter((r) => r.status === "duplicate").length;
+
+        return res.json({ success: true, notified, duplicates });
+    } catch (err) {
+        console.error("[notifyBracketPromotions] Error:", err);
+        return res.status(500).json({ message: "Failed to send notifications", error: err.message });
     }
 };

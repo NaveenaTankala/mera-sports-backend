@@ -2,6 +2,103 @@ import QRCode from 'qrcode';
 import { supabaseAdmin } from "../config/supabaseClient.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
 
+// Supports both numeric (bigint) and UUID event IDs as used throughout the DB.
+const normalizeEventId = (id) => {
+    if (id === null || id === undefined || String(id).trim() === '') return null;
+    const parsed = Number(id);
+    return Number.isNaN(parsed) ? id : parsed;
+};
+
+const isUuid = (str) => {
+    if (!str || typeof str !== 'string') return false;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str.trim());
+};
+
+const getAssignedEventIdsForAdmin = async (adminId) => {
+    if (!adminId) return [];
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('event_admin_assignments')
+            .select('event_id')
+            .eq('admin_id', adminId);
+
+        if (error) {
+            if (error.code === '42P01') return [];
+            throw error;
+        }
+
+        return (data || []).map((row) => row.event_id).filter((eventId) => eventId !== null && eventId !== undefined);
+    } catch (err) {
+        console.error('getAssignedEventIdsForAdmin error:', err?.message || err);
+        return [];
+    }
+};
+
+const loadAssignedAdminsForEvent = async (eventId) => {
+    const normalizedId = normalizeEventId(eventId);
+    if (normalizedId === null) return [];
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('event_admin_assignments')
+            .select(`
+                admin_id,
+                assigned_by,
+                created_at,
+                users:admin_id ( id, name, email )
+            `)
+            .eq('event_id', normalizedId)
+            .order('created_at', { ascending: true });
+
+        if (error) {
+            if (error.code === '42P01') return [];
+            throw error;
+        }
+
+        return (data || []).map((row) => ({
+            id: row.admin_id,
+            name: row.users?.name || null,
+            email: row.users?.email || null,
+            assigned_by: row.assigned_by || null,
+            assigned_at: row.created_at || null,
+        }));
+    } catch (err) {
+        console.error('loadAssignedAdminsForEvent error:', err?.message || err);
+        return [];
+    }
+};
+
+const syncEventAdminAssignments = async (eventId, adminIds, assignedBy) => {
+    const normalizedEventId = normalizeEventId(eventId);
+    const uniqueAdminIds = Array.from(new Set((adminIds || []).filter(Boolean)));
+
+    const { error: deleteError } = await supabaseAdmin
+        .from('event_admin_assignments')
+        .delete()
+        .eq('event_id', normalizedEventId);
+
+    if (deleteError) {
+        if (deleteError.code === '42P01') return;
+        throw deleteError;
+    }
+
+    if (uniqueAdminIds.length === 0) return;
+
+    const rows = uniqueAdminIds.map((adminId) => ({
+        event_id: normalizedEventId,
+        admin_id: adminId,
+        assigned_by: assignedBy || null,
+    }));
+
+    const { error: insertError } = await supabaseAdmin
+        .from('event_admin_assignments')
+        .upsert(rows, { onConflict: 'event_id,admin_id', ignoreDuplicates: true });
+
+    if (insertError) {
+        if (insertError.code === '42P01') return;
+        throw insertError;
+    }
+};
+
 // GET /api/events/list
 export const listEvents = async (req, res) => {
     try {
@@ -9,7 +106,16 @@ export const listEvents = async (req, res) => {
         let query = supabaseAdmin.from('events').select('*, event_registrations(count)').order('start_date', { ascending: true });
 
         if (created_by) query = query.eq('created_by', created_by);
-        if (admin_id) query = query.or(`created_by.eq.${admin_id},assigned_to.eq.${admin_id}`);
+        if (admin_id) {
+            const multiAssignedEventIds = await getAssignedEventIdsForAdmin(admin_id);
+            const orParts = [`created_by.eq.${admin_id}`, `assigned_to.eq.${admin_id}`];
+
+            if (multiAssignedEventIds.length > 0) {
+                orParts.push(`id.in.(${multiAssignedEventIds.join(',')})`);
+            }
+
+            query = query.or(orParts.join(','));
+        }
 
         const { data, error } = await query;
         if (error) throw error;
@@ -27,9 +133,25 @@ export const getEventDetails = async (req, res) => {
         const { data: eventData, error: eventError } = await supabaseAdmin.from('events').select('*').eq('id', id).single();
         if (eventError || !eventData) return res.status(404).json({ success: false, message: "Event not found" });
 
-        if (eventData.assigned_to) {
+        const assignedAdmins = await loadAssignedAdminsForEvent(id);
+        if (assignedAdmins.length > 0) {
+            eventData.assigned_admins = assignedAdmins;
+            eventData.assigned_admin_ids = assignedAdmins.map((admin) => admin.id);
+            eventData.assigned_user = {
+                id: assignedAdmins[0].id,
+                name: assignedAdmins[0].name,
+                email: assignedAdmins[0].email,
+            };
+        } else if (eventData.assigned_to) {
             const { data: assignedUser } = await supabaseAdmin.from('users').select('id, name, email').eq('id', eventData.assigned_to).single();
-            if (assignedUser) eventData.assigned_user = assignedUser;
+            if (assignedUser) {
+                eventData.assigned_user = assignedUser;
+                eventData.assigned_admins = [assignedUser];
+                eventData.assigned_admin_ids = [assignedUser.id];
+            }
+        } else {
+            eventData.assigned_admins = [];
+            eventData.assigned_admin_ids = [];
         }
 
         const { data: newsData } = await supabaseAdmin.from('event_news').select('*').eq('event_id', id).order('created_at', { ascending: false });
@@ -62,10 +184,25 @@ export const getEventDetails = async (req, res) => {
 // POST /api/events/create
 export const createEvent = async (req, res) => {
     try {
-        const { name, sport, start_date, banner_image, document_file, document_url, sponsors, ...rest } = req.body;
+        const {
+            name,
+            sport,
+            start_date,
+            banner_image,
+            document_file,
+            document_url,
+            sponsors,
+            assigned_admin_ids,
+            assigned_to,
+            ...rest
+        } = req.body;
         if (!name || !sport || !start_date) return res.status(400).json({ message: "Missing required fields" });
 
         const created_by = req.user.id;
+        const normalizedAssignedAdminIds = Array.isArray(assigned_admin_ids)
+            ? Array.from(new Set(assigned_admin_ids.filter(isUuid)))
+            : (assigned_to && isUuid(assigned_to) ? [assigned_to] : []);
+        const primaryAssignedAdminId = normalizedAssignedAdminIds[0] || null;
 
         const banner_url = await uploadBase64(banner_image, 'event-assets', 'banners');
         // Only upload document if document_file is provided (frontend sends document_file, not document_url)
@@ -91,6 +228,8 @@ export const createEvent = async (req, res) => {
             banner_url, document_url: uploadedDocUrl, payment_qr_image,
             sponsors: processedSponsors,
             status: 'upcoming',
+            assigned_to: primaryAssignedAdminId,
+            assigned_by: primaryAssignedAdminId ? created_by : null,
             ...rest
         }).select().single();
 
@@ -145,6 +284,18 @@ export const createEvent = async (req, res) => {
             }
         }
 
+        await syncEventAdminAssignments(data.id, normalizedAssignedAdminIds, created_by);
+        const assignedAdmins = await loadAssignedAdminsForEvent(data.id);
+        data.assigned_admins = assignedAdmins;
+        data.assigned_admin_ids = assignedAdmins.map((admin) => admin.id);
+        if (assignedAdmins.length > 0) {
+            data.assigned_user = {
+                id: assignedAdmins[0].id,
+                name: assignedAdmins[0].name,
+                email: assignedAdmins[0].email,
+            };
+        }
+
         res.json({ success: true, event: data });
     } catch (err) {
         console.error("Create Event Logic Error:", err);
@@ -157,6 +308,7 @@ export const updateEvent = async (req, res) => {
     try {
         const { id } = req.params;
         const updates = req.body;
+        let assignedAdminIdsInput;
 
         if (updates.banner_image) {
             updates.banner_url = await uploadBase64(updates.banner_image, 'event-assets', 'banners');
@@ -189,8 +341,20 @@ export const updateEvent = async (req, res) => {
         ['start_date', 'end_date', 'registration_deadline'].forEach(f => { if (updates[f] === "") updates[f] = null; });
         delete updates.id; delete updates.created_at; delete updates.created_by;
 
+        if (updates.hasOwnProperty('assigned_admin_ids')) {
+            assignedAdminIdsInput = Array.isArray(updates.assigned_admin_ids)
+                ? Array.from(new Set(updates.assigned_admin_ids.filter(isUuid)))
+                : [];
+            updates.assigned_to = assignedAdminIdsInput[0] || null;
+            delete updates.assigned_admin_ids;
+        } else if (updates.hasOwnProperty('assigned_to')) {
+            assignedAdminIdsInput = updates.assigned_to && isUuid(updates.assigned_to)
+                ? [updates.assigned_to]
+                : [];
+        }
+
         // Track who assigned the event
-        if (updates.hasOwnProperty('assigned_to') && req.user && req.user.id) {
+        if ((updates.hasOwnProperty('assigned_to') || assignedAdminIdsInput !== undefined) && req.user && req.user.id) {
             updates.assigned_by = req.user.id;
         }
 
@@ -199,6 +363,21 @@ export const updateEvent = async (req, res) => {
 
         const { data, error } = await supabaseAdmin.from('events').update(updates).eq('id', id).select().single();
         if (error) throw error;
+
+        if (assignedAdminIdsInput !== undefined) {
+            await syncEventAdminAssignments(id, assignedAdminIdsInput, req.user?.id);
+        }
+
+        const assignedAdmins = await loadAssignedAdminsForEvent(id);
+        data.assigned_admins = assignedAdmins;
+        data.assigned_admin_ids = assignedAdmins.map((admin) => admin.id);
+        if (assignedAdmins.length > 0) {
+            data.assigned_user = {
+                id: assignedAdmins[0].id,
+                name: assignedAdmins[0].name,
+                email: assignedAdmins[0].email,
+            };
+        }
 
         res.json({ success: true, event: data });
     } catch (err) {

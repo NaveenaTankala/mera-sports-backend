@@ -10,8 +10,8 @@ import {
     verifyMobileOtp
 } from "../services/otpService.js";
 import { sendRegistrationSuccessEmail } from "../utils/mailer.js";
-import { uploadBase64 } from "../utils/uploadHelper.js";
 import { getNextPlayerId } from "../utils/playerIdHelper.js";
+import { uploadBase64 } from "../utils/uploadHelper.js";
 
 /* ================= FORGOT PASSWORD ================= */
 
@@ -496,12 +496,20 @@ export const loginPlayer = async (req, res) => {
         try {
             isMatch = await bcrypt.compare(password, user.password);
         } catch (compareErr) {
-            console.error("PASSWORD COMPARE ERROR:", compareErr.message);
+            // Log only the error code/type — never the message (could contain hash fragments)
+            console.error("PASSWORD COMPARE ERROR [player]:", compareErr?.code || compareErr?.name || "unexpected error");
             return res.status(500).json({ message: "Login failed. Please try again." });
         }
         if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
-        const token = jwt.sign({ id: user.id, role: 'player' }, process.env.JWT_SECRET, { expiresIn: "30d" });
+        const playerTokenExpiresIn = (() => {
+            const raw = process.env.PLAYER_JWT_EXPIRES_IN;
+            // Accept only simple duration strings: digits followed by s/m/h/d/w (e.g. 7d, 30m)
+            if (raw && /^\d+[smhdw]$/.test(raw)) return raw;
+            if (raw) console.warn(`[playerLogin] PLAYER_JWT_EXPIRES_IN "${raw}" is not a valid duration — falling back to "7d"`);
+            return "7d";
+        })();
+        const token = jwt.sign({ id: user.id, role: 'player' }, process.env.JWT_SECRET, { expiresIn: playerTokenExpiresIn });
 
         res.json({
             success: true,
@@ -658,7 +666,8 @@ export const loginInstitute = async (req, res) => {
         try {
             isMatch = await bcrypt.compare(password, user.password);
         } catch (compareErr) {
-            console.error("PASSWORD COMPARE ERROR:", compareErr.message);
+            // Log only the error code/type — never the message (could contain hash fragments)
+            console.error("PASSWORD COMPARE ERROR [institute]:", compareErr?.code || compareErr?.name || "unexpected error");
             return res.status(500).json({ message: "Login failed. Please try again." });
         }
         if (!isMatch) {
@@ -712,13 +721,16 @@ export const loginAdmin = async (req, res) => {
         if (error || !user) return res.status(401).json({ message: "Invalid credentials" });
         if (user.role !== 'admin' && user.role !== 'superadmin') return res.status(403).json({ message: "Access Denied." });
 
-        // Compare password — try bcrypt first (regular admins), fall back to plain comparison for Google OAuth placeholder passwords
+        // Compare password using bcrypt only.
+        // If stored value is not a bcrypt hash (OAuth bootstrap account), enforce OAuth login.
         let adminPasswordMatch = false;
         try {
             adminPasswordMatch = await bcrypt.compare(password, user.password);
-        } catch {
-            // stored value is not a bcrypt hash (Google OAuth placeholder) — plain-text fallback
-            adminPasswordMatch = user.password === password;
+        } catch (compareErr) {
+            console.error("ADMIN PASSWORD COMPARE ERROR:", compareErr?.message || compareErr);
+            return res.status(401).json({
+                message: "Password login unavailable for this account. Please sign in with Google."
+            });
         }
         if (!adminPasswordMatch) return res.status(401).json({ message: "Invalid credentials" });
 
