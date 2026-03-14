@@ -2,12 +2,20 @@ import QRCode from 'qrcode';
 import { supabaseAdmin } from "../config/supabaseClient.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
 
+// Supports both numeric (bigint) and UUID event IDs as used throughout the DB.
 const normalizeEventId = (id) => {
+    if (id === null || id === undefined || String(id).trim() === '') return null;
     const parsed = Number(id);
     return Number.isNaN(parsed) ? id : parsed;
 };
 
+const isUuid = (str) => {
+    if (!str || typeof str !== 'string') return false;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str.trim());
+};
+
 const getAssignedEventIdsForAdmin = async (adminId) => {
+    if (!adminId) return [];
     try {
         const { data, error } = await supabaseAdmin
             .from('event_admin_assignments')
@@ -27,6 +35,8 @@ const getAssignedEventIdsForAdmin = async (adminId) => {
 };
 
 const loadAssignedAdminsForEvent = async (eventId) => {
+    const normalizedId = normalizeEventId(eventId);
+    if (normalizedId === null) return [];
     try {
         const { data, error } = await supabaseAdmin
             .from('event_admin_assignments')
@@ -36,7 +46,7 @@ const loadAssignedAdminsForEvent = async (eventId) => {
                 created_at,
                 users:admin_id ( id, name, email )
             `)
-            .eq('event_id', normalizeEventId(eventId))
+            .eq('event_id', normalizedId)
             .order('created_at', { ascending: true });
 
         if (error) {
@@ -190,8 +200,8 @@ export const createEvent = async (req, res) => {
 
         const created_by = req.user.id;
         const normalizedAssignedAdminIds = Array.isArray(assigned_admin_ids)
-            ? Array.from(new Set(assigned_admin_ids.filter(Boolean)))
-            : (assigned_to ? [assigned_to] : []);
+            ? Array.from(new Set(assigned_admin_ids.filter(isUuid)))
+            : (assigned_to && isUuid(assigned_to) ? [assigned_to] : []);
         const primaryAssignedAdminId = normalizedAssignedAdminIds[0] || null;
 
         const banner_url = await uploadBase64(banner_image, 'event-assets', 'banners');
@@ -333,12 +343,14 @@ export const updateEvent = async (req, res) => {
 
         if (updates.hasOwnProperty('assigned_admin_ids')) {
             assignedAdminIdsInput = Array.isArray(updates.assigned_admin_ids)
-                ? Array.from(new Set(updates.assigned_admin_ids.filter(Boolean)))
+                ? Array.from(new Set(updates.assigned_admin_ids.filter(isUuid)))
                 : [];
             updates.assigned_to = assignedAdminIdsInput[0] || null;
             delete updates.assigned_admin_ids;
         } else if (updates.hasOwnProperty('assigned_to')) {
-            assignedAdminIdsInput = updates.assigned_to ? [updates.assigned_to] : [];
+            assignedAdminIdsInput = updates.assigned_to && isUuid(updates.assigned_to)
+                ? [updates.assigned_to]
+                : [];
         }
 
         // Track who assigned the event

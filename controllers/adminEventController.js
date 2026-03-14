@@ -51,23 +51,24 @@ export const getRegistrations = async (req, res) => {
             : (admin_id || req.user?.id);
 
         if (requestingAdminId) {
+            // Run both queries concurrently to avoid sequential round-trips
+            const [directResult, assignmentResult] = await Promise.all([
+                supabaseAdmin.from('events').select('id').or(`created_by.eq.${requestingAdminId},assigned_to.eq.${requestingAdminId}`),
+                supabaseAdmin.from('event_admin_assignments').select('event_id').eq('admin_id', requestingAdminId),
+            ]);
+
+            if (directResult.error) throw directResult.error;
+            if (assignmentResult.error) {
+                if (assignmentResult.error.code === '42P01') {
+                    console.warn('[getRegistrations] event_admin_assignments table does not exist — multi-assignment filter skipped.');
+                } else {
+                    throw assignmentResult.error;
+                }
+            }
+
             const allowedEventIds = new Set();
-
-            const { data: directEvents, error: directEventsError } = await supabaseAdmin
-                .from('events')
-                .select('id')
-                .or(`created_by.eq.${requestingAdminId},assigned_to.eq.${requestingAdminId}`);
-
-            if (directEventsError) throw directEventsError;
-            (directEvents || []).forEach((eventRow) => allowedEventIds.add(eventRow.id));
-
-            const { data: assignmentRows, error: assignmentError } = await supabaseAdmin
-                .from('event_admin_assignments')
-                .select('event_id')
-                .eq('admin_id', requestingAdminId);
-
-            if (assignmentError && assignmentError.code !== '42P01') throw assignmentError;
-            (assignmentRows || []).forEach((row) => allowedEventIds.add(row.event_id));
+            (directResult.data || []).forEach((eventRow) => allowedEventIds.add(eventRow.id));
+            (assignmentResult.data || []).forEach((row) => allowedEventIds.add(row.event_id));
 
             const eventIds = Array.from(allowedEventIds).filter((value) => value !== null && value !== undefined);
             if (eventIds.length === 0) {
@@ -99,23 +100,24 @@ export const getTransactions = async (req, res) => {
 
         if (eventId) query = query.eq('event_id', eventId);
         if (admin_id) {
+            // Run both queries concurrently to avoid sequential round-trips
+            const [directResult, assignmentResult] = await Promise.all([
+                supabaseAdmin.from('events').select('id').or(`created_by.eq.${admin_id},assigned_to.eq.${admin_id}`),
+                supabaseAdmin.from('event_admin_assignments').select('event_id').eq('admin_id', admin_id),
+            ]);
+
+            if (directResult.error) throw directResult.error;
+            if (assignmentResult.error) {
+                if (assignmentResult.error.code === '42P01') {
+                    console.warn('[getTransactions] event_admin_assignments table does not exist — multi-assignment filter skipped.');
+                } else {
+                    throw assignmentResult.error;
+                }
+            }
+
             const allowedEventIds = new Set();
-
-            const { data: directEvents, error: directEventsError } = await supabaseAdmin
-                .from('events')
-                .select('id')
-                .or(`created_by.eq.${admin_id},assigned_to.eq.${admin_id}`);
-
-            if (directEventsError) throw directEventsError;
-            (directEvents || []).forEach((eventRow) => allowedEventIds.add(eventRow.id));
-
-            const { data: assignmentRows, error: assignmentError } = await supabaseAdmin
-                .from('event_admin_assignments')
-                .select('event_id')
-                .eq('admin_id', admin_id);
-
-            if (assignmentError && assignmentError.code !== '42P01') throw assignmentError;
-            (assignmentRows || []).forEach((row) => allowedEventIds.add(row.event_id));
+            (directResult.data || []).forEach((eventRow) => allowedEventIds.add(eventRow.id));
+            (assignmentResult.data || []).forEach((row) => allowedEventIds.add(row.event_id));
 
             const eventIds = Array.from(allowedEventIds).filter((value) => value !== null && value !== undefined);
             if (eventIds.length === 0) {

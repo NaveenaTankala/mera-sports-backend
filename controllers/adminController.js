@@ -235,7 +235,13 @@ export const deleteAdmin = async (req, res) => {
             .from('event_admin_assignments')
             .delete()
             .eq('admin_id', targetAdminId);
-        if (assignmentDeleteError && assignmentDeleteError.code !== '42P01') throw assignmentDeleteError;
+        if (assignmentDeleteError) {
+            if (assignmentDeleteError.code === '42P01') {
+                console.warn('[deleteAdmin] event_admin_assignments table does not exist — skipping multi-assignment cleanup.');
+            } else {
+                throw assignmentDeleteError;
+            }
+        }
 
         // 2. Transfer events
         const { error: transferError } = await supabaseAdmin.from('events').update({ created_by: superAdminId }).eq('created_by', targetAdminId);
@@ -500,7 +506,13 @@ export const getAssignments = async (req, res) => {
             .from('event_admin_assignments')
             .select('event_id, admin_id, assigned_by, created_at');
 
-        if (assignmentRowsError && assignmentRowsError.code !== '42P01') throw assignmentRowsError;
+        if (assignmentRowsError) {
+            if (assignmentRowsError.code === '42P01') {
+                console.warn('[getAdminAssignments] event_admin_assignments table does not exist — multi-assignment data will be empty.');
+            } else {
+                throw assignmentRowsError;
+            }
+        }
 
         // 3. Collect distinct user IDs of assigners
         const assignedByIds = new Set();
@@ -528,10 +540,20 @@ export const getAssignments = async (req, res) => {
 
         // 5. Build helper maps for assigned events grouped by admin
         const groupedByAdmin = new Map();
+        // Track per-admin which event IDs have already been added (O(1) dedup vs O(n) .some())
+        const seenEventsByAdmin = new Map();
+
+        const getOrCreateAdminSet = (adminId) => {
+            if (!seenEventsByAdmin.has(adminId)) seenEventsByAdmin.set(adminId, new Set());
+            return seenEventsByAdmin.get(adminId);
+        };
 
         (eventsData || []).forEach((event) => {
             if (!event.assigned_to) return;
             if (!groupedByAdmin.has(event.assigned_to)) groupedByAdmin.set(event.assigned_to, []);
+            const seen = getOrCreateAdminSet(event.assigned_to);
+            if (seen.has(event.id)) return;
+            seen.add(event.id);
 
             groupedByAdmin.get(event.assigned_to).push({
                 event_id: event.id,
@@ -565,10 +587,10 @@ export const getAssignments = async (req, res) => {
             if (!adminId || !eventDetails?.id) return;
 
             if (!groupedByAdmin.has(adminId)) groupedByAdmin.set(adminId, []);
+            const seen = getOrCreateAdminSet(adminId);
+            if (seen.has(eventDetails.id)) return;
+            seen.add(eventDetails.id);
             const existing = groupedByAdmin.get(adminId);
-
-            // Avoid duplicate rows if legacy and join-table both contain same mapping
-            if (existing.some((event) => event.event_id === eventDetails.id)) return;
 
             existing.push({
                 event_id: eventDetails.id,

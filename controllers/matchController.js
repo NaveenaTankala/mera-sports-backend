@@ -12,11 +12,30 @@ const normalizeRoundName = (s) => String(s ?? "").trim().toLowerCase();
 const MAX_SETS_PER_MATCH = 9;
 
 const parseSetsPerMatch = (rawValue, fallback = 1) => {
+    // Clamp the fallback itself so callers can't accidentally pass an out-of-range default.
+    const safeFallback = Number.isInteger(fallback) && fallback >= 1 && fallback <= MAX_SETS_PER_MATCH
+        ? fallback
+        : 1;
     const parsed = Number.parseInt(String(rawValue ?? ""), 10);
-    if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_SETS_PER_MATCH) return fallback;
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_SETS_PER_MATCH) return safeFallback;
     return parsed;
 };
 
+/**
+ * Resolve the definitive sets-per-match count for a category/match.
+ *
+ * Priority order:
+ *  1. `configuredSets` — value stored in the bracket round config (highest priority)
+ *  2. `requestSets`    — raw value sent in the request body
+ *  3. `observedSetsLength` — number of sets already recorded on the match
+ *  4. 1 (minimum valid fallback)
+ *
+ * @param {Object} params
+ * @param {number} [params.configuredSets=1]      - Sets count from the bracket round config.
+ * @param {number|string} [params.requestSets]    - Raw sets value from the request body (will be parsed/clamped).
+ * @param {number} [params.observedSetsLength=0]  - Count of set entries already present on the match record.
+ * @returns {number} A valid integer in the range [1, MAX_SETS_PER_MATCH].
+ */
 const resolveSetsPerMatch = ({ configuredSets = 1, requestSets, observedSetsLength = 0 }) => {
     if (configuredSets > 1) return configuredSets;
     const parsedRequestSets = parseSetsPerMatch(requestSets, 1);

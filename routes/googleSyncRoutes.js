@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import dotenv from "dotenv";
 import express from "express";
 import jwt from "jsonwebtoken";
@@ -101,7 +102,10 @@ router.post('/sync', async (req, res) => {
             }
         } else {
             // 3. IF NEW USER, CREATE WITH DUMMY DATA
-            const hashedOAuthSentinel = await bcrypt.hash('GOOGLE_AUTH_ADMIN', 12);
+            // Generate a unique random sentinel per account instead of hashing a static
+            // string. This way the password is never guessable even with source-code access.
+            const oauthSentinel = crypto.randomBytes(32).toString("hex");
+            const hashedOAuthSentinel = await bcrypt.hash(oauthSentinel, 12);
             const userData = {
                 id: user.id,
                 email: user.email,

@@ -6,7 +6,9 @@ import { supabaseAdmin } from "../config/supabaseClient.js";
  * @param {string} title - Title
  * @param {string} message - Message Content
  * @param {string} type - 'info' | 'success' | 'warning' | 'error'
- * @param {string} [link] - Optional link
+ * @param {string} [link] - Optional deduplication/navigation link
+ * @returns {Promise<boolean>} true if the notification was created successfully, false on any error.
+ *                             Callers should check the return value when notification delivery is critical.
  */
 export const createNotification = async (userId, title, message, type = 'info', link = null) => {
     try {

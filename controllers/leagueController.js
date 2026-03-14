@@ -277,9 +277,11 @@ export const notifyLeaguePromotions = async (req, res) => {
             return res.json({ success: true, notified: 0, duplicates: 0 });
         }
 
-        const categoryKey = String(categoryId || categoryLabel || "unknown-category").trim();
-        const safeCompletedRound = String(completedRoundName || "League Stage").trim();
-        const safeNextRound = String(nextRoundName || "Next Round").trim();
+        // Sanitize variable segments so colons (our delimiter) don't corrupt the key.
+        const sanitizeSegment = (s) => String(s).replace(/:/g, "-");
+        const categoryKey = sanitizeSegment(String(categoryId || categoryLabel || "unknown-category").trim());
+        const safeCompletedRound = sanitizeSegment(String(completedRoundName || "League Stage").trim());
+        const safeNextRound = sanitizeSegment(String(nextRoundName || "Next Round").trim());
         const safePromotionType = promotionType === "knockout" ? "knockout" : "next-round";
 
         const formatSummary = (promotion) => {
@@ -303,16 +305,28 @@ export const notifyLeaguePromotions = async (req, res) => {
 
         const truncateMembers = (memberNames) => {
             if (!Array.isArray(memberNames) || memberNames.length === 0) return "";
-            const names = memberNames.map((name) => String(name || "").trim()).filter(Boolean);
+            const MAX_NAME_LEN = 30;
+            const names = memberNames
+                .map((name) => {
+                    const s = String(name || "").trim();
+                    return s.length > MAX_NAME_LEN ? s.slice(0, MAX_NAME_LEN) + "…" : s;
+                })
+                .filter(Boolean);
             if (names.length === 0) return "";
             if (names.length <= 3) return names.join(", ");
             return `${names.slice(0, 3).join(", ")} +${names.length - 3} more`;
         };
 
+        // Request-scoped cache: if the same player_id appears in multiple promotions
+        // within a single request, the DB is only hit once per unique ID.
+        const recipientIdCache = new Map();
+
         const resolveNotificationUserId = async (rawRecipientId) => {
             const normalizedId = String(rawRecipientId || "").trim();
             if (!normalizedId) return null;
             if (isUuid(normalizedId)) return normalizedId;
+
+            if (recipientIdCache.has(normalizedId)) return recipientIdCache.get(normalizedId);
 
             const { data: userByPlayerCode, error: playerCodeError } = await supabaseAdmin
                 .from("users")
@@ -324,15 +338,21 @@ export const notifyLeaguePromotions = async (req, res) => {
             if (playerCodeError) {
                 console.error("[notifyLeaguePromotions] User lookup by player_id failed:", playerCodeError);
             }
-            if (userByPlayerCode?.id && isUuid(String(userByPlayerCode.id))) {
-                return String(userByPlayerCode.id);
-            }
+            const resolved = userByPlayerCode?.id && isUuid(String(userByPlayerCode.id))
+                ? String(userByPlayerCode.id)
+                : null;
 
-            return null;
+            recipientIdCache.set(normalizedId, resolved);
+            return resolved;
         };
 
         const results = await Promise.allSettled(
             promotions.map(async (promotion) => {
+                // Guard against null / non-object entries in the promotions array
+                if (!promotion || typeof promotion !== "object") {
+                    return { status: "skipped", sent: 0, duplicates: 0 };
+                }
+
                 const entityId = String(promotion?.entityId || promotion?.playerId || "").trim();
                 const entityName = String(promotion?.entityName || promotion?.playerName || "Player").trim();
                 const sourceGroup = String(promotion?.sourceGroup || "").trim();
@@ -343,15 +363,16 @@ export const notifyLeaguePromotions = async (req, res) => {
                     ? promotion.recipientIds.map((id) => String(id || "").trim()).filter(Boolean)
                     : [];
 
-                let recipientIds = explicitRecipients;
-                if (recipientIds.length === 0 && entityId) {
-                    recipientIds = [entityId];
-                }
-                if (recipientIds.length === 0) {
+                // Use a clearly-named final variable; avoid multiple reassignments
+                const rawFinalRecipientIds = explicitRecipients.length > 0
+                    ? explicitRecipients
+                    : entityId ? [entityId] : [];
+
+                if (rawFinalRecipientIds.length === 0) {
                     return { status: "skipped" };
                 }
 
-                const dedupeLink = `league-promotion:${eventId}:${categoryKey}:${safeCompletedRound}:${safeNextRound}:${safePromotionType}:${entityId || recipientIds.join(",")}`;
+                const dedupeLink = `league-promotion:${eventId}:${categoryKey}:${safeCompletedRound}:${safeNextRound}:${safePromotionType}:${entityId || rawFinalRecipientIds.join(",")}`;
                 const summary = formatSummary(promotion);
                 const placeText = Number.isFinite(sourcePosition) ? `#${sourcePosition}` : "qualified";
                 const groupText = sourceGroup ? `Group ${sourceGroup}` : "the league stage";
@@ -370,36 +391,40 @@ export const notifyLeaguePromotions = async (req, res) => {
                     categoryLabel ? `Category: ${categoryLabel}.` : "",
                 ].filter(Boolean).join(" ");
 
-                let sent = 0;
-                let duplicates = 0;
-                for (const rawRecipientId of recipientIds) {
-                    const recipientId = await resolveNotificationUserId(rawRecipientId);
-                    if (!recipientId) {
-                        console.warn(`[notifyLeaguePromotions] Skipping unresolved recipient: ${rawRecipientId}`);
-                        continue;
-                    }
+                // Resolve all raw IDs to UUIDs concurrently (avoid sequential awaits in loop)
+                const resolvedIds = await Promise.all(
+                    rawFinalRecipientIds.map(resolveNotificationUserId)
+                );
+                const finalRecipientIds = resolvedIds.filter((id, i) => {
+                    if (!id) console.warn(`[notifyLeaguePromotions] Skipping unresolved recipient: ${rawFinalRecipientIds[i]}`);
+                    return Boolean(id);
+                });
 
-                    const { data: existingRows, error: existingError } = await supabaseAdmin
-                        .from("notifications")
-                        .select("id")
-                        .eq("user_id", recipientId)
-                        .eq("link", dedupeLink)
-                        .limit(1);
-
-                    if (existingError) {
-                        console.error("[notifyLeaguePromotions] Dedupe check failed:", existingError);
-                    }
-
-                    if (Array.isArray(existingRows) && existingRows.length > 0) {
-                        duplicates += 1;
-                        continue;
-                    }
-
-                    const created = await createNotification(recipientId, title, message, "success", dedupeLink);
-                    if (created) {
-                        sent += 1;
-                    }
+                if (finalRecipientIds.length === 0) {
+                    return { status: "skipped", sent: 0, duplicates: 0 };
                 }
+
+                // Single batched dedupe query instead of one query per recipient
+                const { data: existingRows, error: existingError } = await supabaseAdmin
+                    .from("notifications")
+                    .select("user_id")
+                    .in("user_id", finalRecipientIds)
+                    .eq("link", dedupeLink);
+
+                if (existingError) {
+                    console.error("[notifyLeaguePromotions] Dedupe check failed:", existingError);
+                }
+
+                const alreadyNotified = new Set((existingRows || []).map((r) => r.user_id));
+                const toNotify = finalRecipientIds.filter((id) => !alreadyNotified.has(id));
+                const duplicates = finalRecipientIds.length - toNotify.length;
+
+                const sendResults = await Promise.all(
+                    toNotify.map((recipientId) =>
+                        createNotification(recipientId, title, message, "success", dedupeLink)
+                    )
+                );
+                const sent = sendResults.filter(Boolean).length;
 
                 return { status: sent > 0 ? "sent" : "duplicate", sent, duplicates };
             })
@@ -407,9 +432,9 @@ export const notifyLeaguePromotions = async (req, res) => {
 
         const summary = results.reduce(
             (acc, result) => {
-                if (result.status !== "fulfilled") return acc;
-                acc.notified += result.value?.sent || 0;
-                acc.duplicates += result.value?.duplicates || 0;
+                if (result.status !== "fulfilled" || !result.value || typeof result.value !== "object") return acc;
+                acc.notified += Number(result.value.sent) || 0;
+                acc.duplicates += Number(result.value.duplicates) || 0;
                 return acc;
             },
             { notified: 0, duplicates: 0 }
