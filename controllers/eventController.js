@@ -437,8 +437,17 @@ export const getEventBrackets = async (req, res) => {
             return true;
         });
 
-        // Filter by published status
+        // Filter by published status:
+        // - League/pool-converted brackets (createdFrom === "league" or "pool") are always included
+        //   because the admin explicitly initiates conversion for public display.
+        // - Media draws require explicit publishing.
+        // - Regular brackets: include if published is true or null (backward compat); exclude if explicitly false.
         const publishedBrackets = visibleBrackets.filter(bracket => {
+            // League/pool-converted BRACKET mode rows are always visible
+            const createdFrom = bracket.bracket_data?.createdFrom || bracket.draw_data?.createdFrom;
+            if (bracket.mode === 'BRACKET' && (createdFrom === 'league' || createdFrom === 'pool')) {
+                return true;
+            }
             // Include if published is true, or if published field doesn't exist (backward compatibility)
             // If explicitly false, exclude it.
             return bracket.published !== false;
