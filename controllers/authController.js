@@ -216,10 +216,24 @@ export const verifyMobileRegistrationOtp = async (req, res) => {
 
 export const checkUserConflict = async (req, res) => {
     try {
-        const { mobile, email, aadhaar } = req.body;
+        const { mobile, email, aadhaar, dob } = req.body;
         if (!mobile || !email) {
             return res.status(400).json({ message: "Mobile and Email are required for check." });
         }
+
+        const calculateAge = (birthDate) => {
+            if (!birthDate) return null;
+            const birth = new Date(birthDate);
+            if (Number.isNaN(birth.getTime())) return null;
+            const today = new Date();
+            let age = today.getFullYear() - birth.getFullYear();
+            const monthDiff = today.getMonth() - birth.getMonth();
+            if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) age--;
+            return age;
+        };
+
+        const requestedAge = calculateAge(dob);
+        const isMinorRequest = requestedAge !== null && requestedAge <= 15;
 
         let query;
         if (aadhaar) {
@@ -238,21 +252,8 @@ export const checkUserConflict = async (req, res) => {
         if (error) throw error;
 
         if (existingUsers && existingUsers.length > 0) {
-            // For mobile conflicts, exclude family members (they share the head's mobile)
-            // Only flag mobile conflict if a non-family-member (head/independent) has it
             const existingIds = existingUsers.filter(u => u.mobile == mobile).map(u => u.id);
-            let mobileConflict = existingIds.length > 0;
-
-            if (mobileConflict && existingIds.length > 0) {
-                // Check if ALL mobile matches are family members — if so, don't flag mobile conflict
-                const { data: familyRels } = await supabaseAdmin
-                    .from("family_relations")
-                    .select("of_player_id")
-                    .in("of_player_id", existingIds);
-                const familyIds = new Set((familyRels || []).map(r => r.of_player_id));
-                const headMatches = existingIds.filter(id => !familyIds.has(id));
-                mobileConflict = headMatches.length > 0;
-            }
+            const mobileConflict = !isMinorRequest && existingIds.length > 0;
 
             const conflicts = new Set();
             if (mobileConflict) conflicts.add("Mobile");
@@ -323,11 +324,13 @@ export const registerPlayer = async (req, res) => {
             return res.status(500).json({ message: "Failed to secure password. Please try again." });
         }
 
-        // 3. Duplicate Check (email/aadhaar are unique; mobile can be shared by family)
+        // 3. Duplicate Check (email/aadhaar are unique; mobile can be shared only for age <= 15)
         const { data: duplicates } = await supabaseAdmin
             .from("users")
-            .select("id, mobile, email, aadhaar")
+            .select("id, mobile, email, aadhaar, age, created_at")
             .or(`email.eq.${email}${aadhaar ? `,aadhaar.eq.${aadhaar}` : ''},mobile.eq.${mobile}`);
+
+        let selectedHeadPlayerId = null;
 
         if (duplicates && duplicates.length > 0) {
             // Email and aadhaar are always unique
@@ -336,17 +339,41 @@ export const registerPlayer = async (req, res) => {
             if (emailDup || aadhaarDup) {
                 return res.status(400).json({ message: "User with this Email or Aadhaar already exists." });
             }
-            // Mobile: only block if a non-family-member (head/independent) already has it
+
+            // Mobile: allow duplicate only when new registrant is <= 15
             const mobileMatches = duplicates.filter(u => u.mobile === mobile);
             if (mobileMatches.length > 0) {
+                if (age > 15) {
+                    return res.status(400).json({ message: "User with this Mobile already exists." });
+                }
+
                 const { data: familyRels } = await supabaseAdmin
                     .from("family_relations")
-                    .select("of_player_id")
+                    .select("head_player_id, of_player_id")
                     .in("of_player_id", mobileMatches.map(u => u.id));
-                const familyIds = new Set((familyRels || []).map(r => r.of_player_id));
-                const headMatches = mobileMatches.filter(u => !familyIds.has(u.id));
-                if (headMatches.length > 0) {
-                    return res.status(400).json({ message: "User with this Mobile already exists." });
+
+                const familyMemberIds = new Set((familyRels || []).map(r => r.of_player_id));
+
+                const directHeadCandidates = mobileMatches
+                    .filter(u => !familyMemberIds.has(u.id) && (u.age == null || Number(u.age) >= 16))
+                    .sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+
+                if (directHeadCandidates.length > 0) {
+                    selectedHeadPlayerId = directHeadCandidates[0].id;
+                } else if ((familyRels || []).length > 0) {
+                    const derivedHeadIds = [...new Set((familyRels || []).map(r => r.head_player_id).filter(Boolean))];
+                    if (derivedHeadIds.length > 0) {
+                        const { data: derivedHeads } = await supabaseAdmin
+                            .from("users")
+                            .select("id, age, created_at")
+                            .in("id", derivedHeadIds)
+                            .order("created_at", { ascending: true });
+
+                        const adultDerivedHeads = (derivedHeads || []).filter(h => h.age == null || Number(h.age) >= 16);
+                        if (adultDerivedHeads.length > 0) {
+                            selectedHeadPlayerId = adultDerivedHeads[0].id;
+                        }
+                    }
                 }
             }
         }
@@ -394,6 +421,24 @@ export const registerPlayer = async (req, res) => {
             .maybeSingle();
 
         if (error) throw error;
+
+        // 6b. For minors sharing a mobile, auto-link under selected head as Child
+        if (age <= 15 && selectedHeadPlayerId && selectedHeadPlayerId !== newUserId) {
+            const { error: relationError } = await supabaseAdmin
+                .from("family_relations")
+                .upsert(
+                    {
+                        head_player_id: selectedHeadPlayerId,
+                        of_player_id: newUserId,
+                        relation: "Child"
+                    },
+                    { onConflict: "head_player_id,of_player_id" }
+                );
+
+            if (relationError) {
+                console.error("AUTO FAMILY RELATION ERROR:", relationError);
+            }
+        }
 
         // 7. Insert School Details
         if (schoolDetails) {
@@ -452,6 +497,7 @@ export const loginPlayer = async (req, res) => {
 
         const input = playerIdOrAadhaar.toString().trim();
         let user = null;
+        let resolvedByMobile = false;
 
         if (input.toUpperCase().startsWith('P')) {
             // Player ID lookup (unique)
@@ -470,16 +516,47 @@ export const loginPlayer = async (req, res) => {
                 // Try mobile (may return multiple due to family sharing)
                 const { data: mobileUsers } = await supabaseAdmin.from("users").select("*").eq('mobile', input);
                 if (mobileUsers && mobileUsers.length === 1) {
-                    user = mobileUsers[0];
+                    resolvedByMobile = true;
+                    const onlyUser = mobileUsers[0];
+
+                    // Block mobile login for family member accounts
+                    const { data: relAsMember } = await supabaseAdmin
+                        .from("family_relations")
+                        .select("id")
+                        .eq("of_player_id", onlyUser.id)
+                        .maybeSingle();
+
+                    if (relAsMember) {
+                        return res.status(403).json({
+                            message: "For child/family accounts, login with Player ID or Email only."
+                        });
+                    }
+
+                    user = onlyUser;
                 } else if (mobileUsers && mobileUsers.length > 1) {
-                    // Multiple users share this mobile — find the head (not a family member)
+                    resolvedByMobile = true;
+                    // Multiple users share this mobile — allow login only for head
                     const { data: familyRels } = await supabaseAdmin
                         .from("family_relations")
-                        .select("of_player_id")
-                        .in("of_player_id", mobileUsers.map(u => u.id));
+                        .select("head_player_id, of_player_id")
+                        .or(`head_player_id.in.(${mobileUsers.map(u => u.id).join(',')}),of_player_id.in.(${mobileUsers.map(u => u.id).join(',')})`);
 
-                    const familyMemberIds = new Set((familyRels || []).map(r => r.of_player_id));
-                    user = mobileUsers.find(u => !familyMemberIds.has(u.id)) || mobileUsers[0];
+                    const headIds = new Set((familyRels || []).map(r => r.head_player_id));
+                    const memberIds = new Set((familyRels || []).map(r => r.of_player_id));
+
+                    // Prefer user who is a head and not a member (pure head). Fall back to non-member adult.
+                    let headCandidate = mobileUsers.find(u => headIds.has(u.id) && !memberIds.has(u.id));
+                    if (!headCandidate) {
+                        headCandidate = mobileUsers.find(u => !memberIds.has(u.id) && (u.age == null || Number(u.age) >= 16));
+                    }
+
+                    if (!headCandidate) {
+                        return res.status(403).json({
+                            message: "For child/family accounts, login with Player ID or Email only."
+                        });
+                    }
+
+                    user = headCandidate;
                 }
             }
         } else {
@@ -490,6 +567,21 @@ export const loginPlayer = async (req, res) => {
 
         if (!user) return res.status(401).json({ message: "Invalid credentials" });
         if (user.role !== 'player') return res.status(403).json({ message: "This account is for Admins." });
+
+        // Safety guard: if this login resolved from mobile, never allow family-member account by mobile
+        if (resolvedByMobile) {
+            const { data: relAsMember } = await supabaseAdmin
+                .from("family_relations")
+                .select("id")
+                .eq("of_player_id", user.id)
+                .maybeSingle();
+
+            if (relAsMember) {
+                return res.status(403).json({
+                    message: "For child/family accounts, login with Player ID or Email only."
+                });
+            }
+        }
 
         // Bcrypt password comparison
         let isMatch;

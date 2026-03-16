@@ -2,8 +2,8 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { supabaseAdmin } from "../config/supabaseClient.js";
-import { uploadBase64 } from "../utils/uploadHelper.js";
 import { getNextPlayerId } from "../utils/playerIdHelper.js";
+import { uploadBase64 } from "../utils/uploadHelper.js";
 
 // GET /api/player/dashboard
 export const getPlayerDashboard = async (req, res) => {
@@ -58,105 +58,6 @@ export const getPlayerDashboard = async (req, res) => {
         // Fetch Transactions
         const { data: transactions } = await supabaseAdmin.from("transactions").select("*").eq("user_id", userId);
 
-        // Fetch Family Members via family_relations
-        // 1. Check if this user is a HEAD player (has family members under them)
-        const { data: headRelations } = await supabaseAdmin
-            .from("family_relations")
-            .select("of_player_id, relation")
-            .eq("head_player_id", userId);
-
-        // 2. Check if this user is a FAMILY MEMBER (added by a head)
-        const { data: memberRelation } = await supabaseAdmin
-            .from("family_relations")
-            .select("head_player_id, relation")
-            .eq("of_player_id", userId)
-            .maybeSingle();
-
-        let familyMembers = [];
-
-        if (headRelations && headRelations.length > 0) {
-            // User is a head — show their family members
-            const familyIds = headRelations.map(r => r.of_player_id);
-            const { data: familyUsers } = await supabaseAdmin
-                .from("users")
-                .select("id, player_id, name, dob, age, gender, email, aadhaar, apartment, street, city, state, pincode, country, photos")
-                .in("id", familyIds);
-
-            if (familyUsers) {
-                familyMembers = familyUsers.map(u => {
-                    const rel = headRelations.find(r => r.of_player_id === u.id);
-                    return { ...u, relation: rel?.relation || "", profile_picture: u.photos };
-                });
-            }
-        }
-
-        if (memberRelation) {
-            // User is a family member — show the head as family
-            const headId = memberRelation.head_player_id;
-            const { data: headUser } = await supabaseAdmin
-                .from("users")
-                .select("id, player_id, name, dob, age, gender, email, aadhaar, apartment, street, city, state, pincode, country, photos")
-                .eq("id", headId)
-                .maybeSingle();
-
-            if (headUser) {
-                // Reverse the relation label (e.g., if head says "Child", the child sees "Parent")
-                const reverseRelation = (rel) => {
-                    const map = { 'Child': 'Parent', 'Parent': 'Child', 'Spouse': 'Spouse', 'Sibling': 'Sibling' };
-                    return map[rel] || 'Family';
-                };
-                familyMembers.push({ ...headUser, relation: reverseRelation(memberRelation.relation), profile_picture: headUser.photos });
-            }
-
-            // Also show siblings (other family members of the same head, excluding self)
-            const { data: siblingRelations } = await supabaseAdmin
-                .from("family_relations")
-                .select("of_player_id, relation")
-                .eq("head_player_id", headId)
-                .neq("of_player_id", userId);
-
-            if (siblingRelations && siblingRelations.length > 0) {
-                const siblingIds = siblingRelations.map(r => r.of_player_id);
-                const { data: siblingUsers } = await supabaseAdmin
-                    .from("users")
-                    .select("id, player_id, name, dob, age, gender, email, aadhaar, apartment, street, city, state, pincode, country, photos")
-                    .in("id", siblingIds);
-
-                if (siblingUsers) {
-                    siblingUsers.forEach(u => {
-                        const rel = siblingRelations.find(r => r.of_player_id === u.id);
-                        // Siblings share the same head — show relation context
-                        const headRelLabel = rel?.relation || "";
-                        const siblingLabel = headRelLabel === 'Child' ? 'Sibling' : headRelLabel === 'Spouse' ? 'Parent' : 'Family';
-                        familyMembers.push({ ...u, relation: siblingLabel, profile_picture: u.photos });
-                    });
-                }
-            }
-        }
-
-        // Fetch Family Members' Event Registrations (only for head players)
-        let familyRegistrations = [];
-        if (headRelations && headRelations.length > 0) {
-            const familyIds = headRelations.map(r => r.of_player_id);
-            const { data: famRegs } = await supabaseAdmin
-                .from("event_registrations")
-                .select("id, registration_no, status, created_at, event_id, player_id, events ( id, name, sport, start_date, location )")
-                .in("player_id", familyIds)
-                .order("created_at", { ascending: false });
-
-            if (famRegs) {
-                familyRegistrations = famRegs.map(reg => {
-                    const member = familyMembers.find(m => m.id === reg.player_id);
-                    return {
-                        ...reg,
-                        member_name: member?.name || "Unknown",
-                        member_player_id: member?.player_id || null,
-                        relation: member?.relation || "",
-                    };
-                });
-            }
-        }
-
         // Merge Details
         const detailedRegistrations = await Promise.all((registrations || []).map(async (reg) => {
             const txn = (transactions || []).find(t => (reg.transaction_id && t.id === reg.transaction_id) || (t.event_id === reg.event_id));
@@ -188,16 +89,7 @@ export const getPlayerDashboard = async (req, res) => {
         res.json({
             success: true,
             player,
-            registrations: detailedRegistrations,
-            familyMembers: familyMembers || [],
-            familyRegistrations: familyRegistrations || [],
-            isHead: !memberRelation,
-            registeredBy: memberRelation ? {
-                id: memberRelation.head_player_id,
-                name: familyMembers.find(m => m.id === memberRelation.head_player_id)?.name || null,
-                player_id: familyMembers.find(m => m.id === memberRelation.head_player_id)?.player_id || null,
-                relation: memberRelation.relation
-            } : null
+            registrations: detailedRegistrations
         });
 
     } catch (err) {
@@ -211,6 +103,8 @@ export const checkConflict = async (req, res) => {
     try {
         const userId = req.user.id;
         const { email, mobile } = req.body;
+        const { data: currentUser } = await supabaseAdmin.from("users").select("age").eq("id", userId).maybeSingle();
+        const allowSharedMobile = Number(currentUser?.age) <= 15;
 
         if (email) {
             const { data } = await supabaseAdmin.from("users").select("id").eq("email", email).neq("id", userId).maybeSingle();
@@ -218,7 +112,7 @@ export const checkConflict = async (req, res) => {
         }
         if (mobile) {
             const { data } = await supabaseAdmin.from("users").select("id").eq("mobile", mobile).neq("id", userId).maybeSingle();
-            if (data) return res.status(409).json({ conflict: true, field: 'mobile', message: "Mobile already taken" });
+            if (data && !allowSharedMobile) return res.status(409).json({ conflict: true, field: 'mobile', message: "Mobile already taken" });
         }
         res.json({ conflict: false });
     } catch (err) { res.status(500).json({ message: "Server error" }); }
@@ -266,7 +160,8 @@ export const updateProfile = async (req, res) => {
         }
         if (mobile && mobile !== currentUser.mobile) {
             const { data } = await supabaseAdmin.from("users").select("id").eq("mobile", mobile).neq("id", userId).maybeSingle();
-            if (data) return res.status(409).json({ message: "Mobile taken" });
+            const allowSharedMobile = Number(currentUser.age) <= 15;
+            if (data && !allowSharedMobile) return res.status(409).json({ message: "Mobile taken" });
         }
 
         let photoUrl = photos;
