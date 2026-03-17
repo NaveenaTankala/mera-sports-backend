@@ -1,5 +1,6 @@
 import QRCode from 'qrcode';
 import { supabaseAdmin } from "../config/supabaseClient.js";
+import { getPublicEventId, resolveEventByIdentifier, resolveEventIdByIdentifier } from "../utils/eventResolver.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
 
 // Supports both numeric (bigint) and UUID event IDs as used throughout the DB.
@@ -119,7 +120,11 @@ export const listEvents = async (req, res) => {
 
         const { data, error } = await query;
         if (error) throw error;
-        res.json({ success: true, events: data });
+        const events = (data || []).map((event) => ({
+            ...event,
+            public_id: getPublicEventId(event),
+        }));
+        res.json({ success: true, events });
     } catch (err) {
         console.error("Fetch Events Error:", err);
         res.status(500).json({ message: "Internal Server Error" });
@@ -130,10 +135,12 @@ export const listEvents = async (req, res) => {
 export const getEventDetails = async (req, res) => {
     try {
         const { id } = req.params;
-        const { data: eventData, error: eventError } = await supabaseAdmin.from('events').select('*').eq('id', id).single();
-        if (eventError || !eventData) return res.status(404).json({ success: false, message: "Event not found" });
+        const eventData = await resolveEventByIdentifier(id, '*');
+        if (!eventData) return res.status(404).json({ success: false, message: "Event not found" });
+        eventData.public_id = getPublicEventId(eventData);
+        const internalEventId = eventData.id;
 
-        const assignedAdmins = await loadAssignedAdminsForEvent(id);
+        const assignedAdmins = await loadAssignedAdminsForEvent(internalEventId);
         if (assignedAdmins.length > 0) {
             eventData.assigned_admins = assignedAdmins;
             eventData.assigned_admin_ids = assignedAdmins.map((admin) => admin.id);
@@ -154,21 +161,39 @@ export const getEventDetails = async (req, res) => {
             eventData.assigned_admin_ids = [];
         }
 
-        const { data: newsData } = await supabaseAdmin.from('event_news').select('*').eq('event_id', id).order('created_at', { ascending: false });
+        const { data: newsData } = await supabaseAdmin.from('event_news').select('*').eq('event_id', internalEventId).order('created_at', { ascending: false });
         eventData.news = newsData || [];
 
         // Stats
-        const { data: regStats } = await supabaseAdmin.from("event_registrations").select("categories, status").eq("event_id", id).in("status", ["verified", "paid", "confirmed", "approved", "registered", "pending", "Pending", "pending_verification", "Submitted"]);
+        // Also fetch team_id so team/doubles categories count distinct teams, not individual players.
+        // (For Singles: team_id is null → count rows. For Team/Doubles: team_id is shared → count distinct team_ids.)
+        const { data: regStats } = await supabaseAdmin.from("event_registrations").select("categories, status, team_id").eq("event_id", internalEventId).in("status", ["verified", "paid", "confirmed", "approved", "registered", "pending", "Pending", "pending_verification", "Submitted"]);
 
         const registrationCounts = {};
+        // Tracks distinct team_ids per category key (for Team/Doubles events)
+        const teamIdsPerCategory = {};
         if (regStats) {
             regStats.forEach(reg => {
-                const addCount = (key) => registrationCounts[key] = (registrationCounts[key] || 0) + 1;
+                const teamId = reg.team_id;
+                const processKey = (key) => {
+                    if (teamId) {
+                        // Team or Doubles registration — count distinct teams/pairs
+                        if (!teamIdsPerCategory[key]) teamIdsPerCategory[key] = new Set();
+                        teamIdsPerCategory[key].add(teamId);
+                    } else {
+                        // Individual (Singles) registration — count rows
+                        registrationCounts[key] = (registrationCounts[key] || 0) + 1;
+                    }
+                };
                 if (Array.isArray(reg.categories)) {
-                    reg.categories.forEach(cat => addCount(typeof cat === 'object' ? (cat.id || cat.name || cat.category) : cat));
+                    reg.categories.forEach(cat => processKey(typeof cat === 'object' ? (cat.id || cat.name || cat.category) : cat));
                 } else if (reg.categories) {
-                    addCount(typeof reg.categories === 'object' ? (reg.categories.id || reg.categories.name || reg.categories.category) : reg.categories);
+                    processKey(typeof reg.categories === 'object' ? (reg.categories.id || reg.categories.name || reg.categories.category) : reg.categories);
                 }
+            });
+            // Merge distinct team/pair counts into registrationCounts
+            Object.entries(teamIdsPerCategory).forEach(([key, teamSet]) => {
+                registrationCounts[key] = (registrationCounts[key] || 0) + teamSet.size;
             });
         }
         eventData.registration_counts = registrationCounts;
@@ -234,10 +259,12 @@ export const createEvent = async (req, res) => {
         }).select().single();
 
         if (error) throw error;
+        data.public_id = getPublicEventId(data);
 
         // QR Code
         try {
-            const link = `${process.env.FRONTEND_URL || 'http://localhost:8081'}/events/${data.id}`;
+            const routeEventId = getPublicEventId(data);
+            const link = `${process.env.FRONTEND_URL || 'http://localhost:8080'}/events/${routeEventId}`;
             const qrDataUrl = await QRCode.toDataURL(link);
             const qrPublicUrl = await uploadBase64(qrDataUrl, 'event-assets', 'qrcodes');
             await supabaseAdmin.from('events').update({ qr_code: qrPublicUrl }).eq('id', data.id);
@@ -267,7 +294,7 @@ export const createEvent = async (req, res) => {
                         title: 'New Event by Admin',
                         message: `${adminName} created the event "${data.name}". Please review and assign access.`,
                         type: 'info',
-                        link: `/events/${data.id}`
+                        link: `/events/${getPublicEventId(data)}`
                     }));
 
                     // Insert into the public.notifications table
@@ -405,11 +432,10 @@ export const deleteEvent = async (req, res) => {
 // GET /api/events/:id/brackets
 export const getEventBrackets = async (req, res) => {
     try {
-        const eventId = req.params.id;
-
-        // Convert event_id to number if possible (events table uses bigint)
-        const eventIdNum = parseInt(eventId, 10);
-        const eventIdQuery = !isNaN(eventIdNum) ? eventIdNum : eventId;
+        const eventIdQuery = await resolveEventIdByIdentifier(req.params.id);
+        if (!eventIdQuery) {
+            return res.status(404).json({ success: false, message: "Event not found", brackets: [] });
+        }
 
         const { data, error } = await supabaseAdmin
             .from('event_brackets')
@@ -493,8 +519,8 @@ export const getEventBrackets = async (req, res) => {
 // GET /api/events/:id/sponsors
 export const getEventSponsors = async (req, res) => {
     try {
-        const { data, error } = await supabaseAdmin.from('events').select('sponsors').eq('id', req.params.id).single();
-        if (error) throw error;
-        res.json({ success: true, sponsors: data?.sponsors || [] });
+        const event = await resolveEventByIdentifier(req.params.id, 'sponsors');
+        if (!event) return res.status(404).json({ success: false, sponsors: [] });
+        res.json({ success: true, sponsors: event?.sponsors || [] });
     } catch (err) { res.status(500).json({ message: err.message }); }
 };

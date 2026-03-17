@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "../config/supabaseClient.js";
+import { getPublicEventId, resolveEventIdByIdentifier } from "../utils/eventResolver.js";
 
 // Simple UUID v4 validator
 const isUuid = (value) => {
@@ -23,6 +24,33 @@ const sanitizeFilterInput = (value) => {
         .replace(/_/g, '\\_')        // escape LIKE wildcard
         .trim()
         .slice(0, 200);
+};
+
+// GET /api/public/events/list
+export const listPublicEvents = async (_req, res) => {
+    try {
+        const { data, error } = await supabaseAdmin
+            .from("events")
+            .select("*, event_registrations(count)")
+            .order("start_date", { ascending: true });
+
+        if (error) throw error;
+
+        const events = (data || []).map((event) => {
+            const publicId = getPublicEventId(event);
+            const { id: _internalId, ...rest } = event;
+            return {
+                ...rest,
+                id: publicId,
+                public_id: publicId,
+            };
+        });
+
+        return res.json({ success: true, events });
+    } catch (err) {
+        console.error("PUBLIC EVENTS LIST ERROR:", err);
+        return res.status(500).json({ success: false, message: "Failed to fetch public events", events: [] });
+    }
 };
 
 // GET /api/public/settings
@@ -57,11 +85,13 @@ export const getPublicSettings = async (req, res) => {
  */
 export const getPublicCategoryDraw = async (req, res) => {
     try {
-        const { id: eventId, categoryId } = req.params;
+        const { id: eventIdentifier, categoryId } = req.params;
         const rawCategoryLabel = req.query.categoryLabel || req.query.category;
         const categoryLabel = rawCategoryLabel ? sanitizeFilterInput(rawCategoryLabel) : null;
 
-        if (!eventId) return res.status(400).json({ message: "Event ID required" });
+        if (!eventIdentifier) return res.status(400).json({ message: "Event ID required" });
+        const eventId = await resolveEventIdByIdentifier(eventIdentifier);
+        if (!eventId) return res.status(404).json({ message: "Event not found" });
 
         let query = supabaseAdmin
             .from("event_brackets")
@@ -170,8 +200,10 @@ export const getPublicCategoryDraw = async (req, res) => {
  */
 export const getPublicEventDraws = async (req, res) => {
     try {
-        const { id: eventId } = req.params;
-        if (!eventId) return res.status(400).json({ message: "Event ID required" });
+        const { id: eventIdentifier } = req.params;
+        if (!eventIdentifier) return res.status(400).json({ message: "Event ID required" });
+        const eventId = await resolveEventIdByIdentifier(eventIdentifier);
+        if (!eventId) return res.status(404).json({ message: "Event not found" });
 
         const { data, error } = await supabaseAdmin
             .from("event_brackets")

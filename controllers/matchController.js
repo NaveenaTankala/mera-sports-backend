@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "../config/supabaseClient.js";
 import { validateBracketIntegrity } from "../middleware/bracketValidation.js";
+import { resolveEventIdByIdentifier } from "../utils/eventResolver.js";
 
 // Helper function to check if string is UUID
 const isUuid = (str) => {
@@ -2489,15 +2490,20 @@ export const clearCategoryScores = async (req, res) => {
 
 // Get Matches (Scoreboard) - Public version (no auth required)
 export const getPublicMatches = async (req, res) => {
-    const eventId = req.params.id || req.params.eventId; // Support both :id and :eventId routes
+    const eventIdentifier = req.params.id || req.params.eventId; // Support both :id and :eventId routes
     const { categoryId, categoryName, roundName, round_name } = req.query;
 
-    if (!eventId) {
+    if (!eventIdentifier) {
         return res.status(400).json({
             success: false,
             message: "Event ID is required",
             debug: { params: req.params, query: req.query }
         });
+    }
+
+    const eventId = await resolveEventIdByIdentifier(eventIdentifier);
+    if (!eventId) {
+        return res.status(404).json({ success: false, message: "Event not found" });
     }
 
     // 🔒 LEAGUE GOLDEN RULE: For LEAGUE matches, category_id is mandatory and exact

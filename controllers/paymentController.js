@@ -1,7 +1,8 @@
 import { supabaseAdmin } from "../config/supabaseClient.js";
+import { createNotification } from "../services/notificationService.js";
+import { resolveEventIdByIdentifier } from "../utils/eventResolver.js";
 import { sendRegistrationEmail } from "../utils/mailer.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
-import { createNotification } from "../services/notificationService.js";
 
 /**
  * Batch-resolve team member UUIDs and notify them of event registration.
@@ -91,6 +92,9 @@ export const submitManualPayment = async (req, res) => {
         if (!eventId || !amount || !categories || !screenshot) return res.status(400).json({ message: "Missing fields" });
         if (req.user.role === "admin") return res.status(403).json({ message: "Admins cannot register." });
 
+        const resolvedEventId = await resolveEventIdByIdentifier(eventId);
+        if (!resolvedEventId) return res.status(404).json({ message: "Event not found" });
+
         const screenshotUrl = await uploadBase64(screenshot, "event-assets", "payment-proofs");
         if (!screenshotUrl) return res.status(500).json({ message: "Failed to upload screenshot" });
 
@@ -112,7 +116,7 @@ export const submitManualPayment = async (req, res) => {
         // 2. Create Registration
         const registrationNo = `REG-${Date.now()}`;
         const { error: regError } = await supabaseAdmin.from("event_registrations").insert({
-            event_id: eventId,
+            event_id: resolvedEventId,
             player_id: userId,
             registration_no: registrationNo,
             categories,
@@ -134,7 +138,7 @@ export const submitManualPayment = async (req, res) => {
         (async () => {
             try {
                 const { data: user } = await supabaseAdmin.from("users").select("email, first_name").eq("id", userId).single();
-                const { data: event } = await supabaseAdmin.from("events").select("name").eq("id", eventId).single();
+                const { data: event } = await supabaseAdmin.from("events").select("name").eq("id", resolvedEventId).single();
                 if (user?.email) {
                     await sendRegistrationEmail(user.email, {
                         playerName: user.first_name, eventName: event?.name, registrationNo, amount, category: categories, date: new Date(), status: 'Pending Verification'
@@ -145,7 +149,7 @@ export const submitManualPayment = async (req, res) => {
 
         // 4. Notify team members about event registration (Async, non-blocking)
         if (teamId) {
-            notifyTeamMembersOfRegistration(teamId, eventId).catch(e =>
+            notifyTeamMembersOfRegistration(teamId, resolvedEventId).catch(e =>
                 console.error('Team registration notification error:', e)
             );
         }
