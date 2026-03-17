@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { supabaseAdmin } from "../config/supabaseClient.js";
+import { getPublicEventId } from "../utils/eventResolver.js";
 import { getNextPlayerId } from "../utils/playerIdHelper.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
 
@@ -47,7 +48,7 @@ export const getPlayerDashboard = async (req, res) => {
         relevantTeamIds = [...new Set(relevantTeamIds)];
 
         // Fetch Registrations
-        let query = supabaseAdmin.from("event_registrations").select(`*, events ( id, name, sport, start_date, location )`).order('created_at', { ascending: false });
+        let query = supabaseAdmin.from("event_registrations").select(`*, events ( id, public_id, name, sport, start_date, location )`).order('created_at', { ascending: false });
         if (relevantTeamIds.length > 0) {
             query = query.or(`player_id.eq.${userId},team_id.in.(${relevantTeamIds.join(',')})`);
         } else {
@@ -78,6 +79,9 @@ export const getPlayerDashboard = async (req, res) => {
             }
             return {
                 ...reg,
+                events: reg.events
+                    ? { ...reg.events, public_id: getPublicEventId(reg.events) }
+                    : reg.events,
                 transactions: txn || null,
                 team_details: teamDetails,
                 is_team_member: isTeamMember,
