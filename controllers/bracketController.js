@@ -2481,7 +2481,8 @@ export const addBracketRound = async (req, res) => {
 export const publishCategoryDraw = async (req, res) => {
     try {
         const { id: eventId, categoryId } = req.params;
-        const { categoryLabel, published } = req.body;
+        const published = req.body?.published;
+        const categoryLabel = req.body?.categoryLabel || req.query?.categoryLabel;
 
         if (!eventId || (!categoryId && !categoryLabel)) {
             return res.status(400).json({ message: "Event ID and Category required" });
@@ -2498,8 +2499,10 @@ export const publishCategoryDraw = async (req, res) => {
 
         if (categoryId && isUuid(categoryId)) {
             query = query.eq("category_id", categoryId);
-        } else {
+        } else if (categoryLabel) {
             query = query.eq("category", categoryLabel);
+        } else {
+            return res.status(400).json({ message: "Valid Category ID or Category Label required" });
         }
 
         const { data, error } = await query.select();
