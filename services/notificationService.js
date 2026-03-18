@@ -27,6 +27,15 @@ export const createNotification = async (userId, title, message, type = 'info', 
             console.error("Error creating notification:", error);
             return false;
         }
+
+        // Explicitly broadcast the event to the frontend for immediate realtime updates
+        // This is safer than relying on postgres_changes if the table lacks publication configs
+        await supabaseAdmin.channel(`system-notifications`).send({
+            type: 'broadcast',
+            event: 'new_notification',
+            payload: { user_id: userId }
+        }).catch(err => console.warn("Broadcast failed, but notification saved:", err));
+
         return true;
     } catch (err) {
         console.error("Exception creating notification:", err);
