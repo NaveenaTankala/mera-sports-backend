@@ -48,7 +48,7 @@ export const sendMessage = async (req, res) => {
                     title: 'New Contact Us Message',
                     message: `${senderDisplay} has sent a new Contact Us message. ${subjectDisplay}.`,
                     type: 'info',
-                    link: `/contact-messages` // Or wherever your frontend route to view these is named
+                    link: `/reports` // Or wherever your frontend route to view these is named
                 }));
 
                 // Insert into the notifications table

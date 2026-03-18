@@ -390,6 +390,7 @@ export const updateEvent = async (req, res) => {
 
         const { data, error } = await supabaseAdmin.from('events').update(updates).eq('id', id).select().single();
         if (error) throw error;
+        data.public_id = getPublicEventId(data);
 
         if (assignedAdminIdsInput !== undefined) {
             await syncEventAdminAssignments(id, assignedAdminIdsInput, req.user?.id);
