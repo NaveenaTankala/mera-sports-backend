@@ -2515,13 +2515,49 @@ export const getPublicMatches = async (req, res) => {
         // Query Supabase directly with exact filters - DO NOT fetch all matches first
         // This eliminates all contamination from matches with wrong/null category_id
         if (isLeagueRequest && categoryId) {
-            const { data: leagueMatches, error: leagueError } = await supabaseAdmin
+            // First check if the league bracket is published
+            let bracketQuery = supabaseAdmin
+                .from('event_brackets')
+                .select('published')
+                .eq('event_id', eventId);
+            
+            if (isUuid(categoryId)) {
+                // If it's a UUID, check category_id
+                bracketQuery = bracketQuery.eq('category_id', categoryId);
+            } else if (categoryName) {
+                // Fallback to categoryName if provided
+                bracketQuery = bracketQuery.eq('category', categoryName);
+            } else {
+                // Try categoryId as a label fallback
+                bracketQuery = bracketQuery.eq('category', categoryId);
+            }
+
+            const { data: bracketData, error: bracketError } = await bracketQuery.limit(1);
+
+            if (bracketError) {
+                throw bracketError;
+            }
+
+            // If no bracket exists, or it's explicitly not published, return empty matches
+            if (!bracketData || bracketData.length === 0 || !bracketData[0].published) {
+                return res.status(200).json({
+                    success: true,
+                    matches: []
+                });
+            }
+
+            // Fetch League Matches
+            let matchQuery = supabaseAdmin
                 .from('matches')
                 .select('id, round_name, player_a, player_b, score, status, winner, updated_at, category_id, event_id')
                 .eq('event_id', eventId)
                 .eq('round_name', 'LEAGUE')
-                .eq('category_id', categoryId)
                 .order('match_index', { ascending: true });
+                
+            // Apply category filter to matches (category_id in matches table is a text/varchar so it accepts string IDs)
+            matchQuery = matchQuery.eq('category_id', categoryId);
+            
+            const { data: leagueMatches, error: leagueError } = await matchQuery;
 
             if (leagueError) {
                 throw leagueError;

@@ -67,7 +67,7 @@ export const addApartment = async (req, res) => {
 
         const trimmedName = name.trim();
         const { data: existing } = await supabaseAdmin.from("apartments").select("id").ilike("name", trimmedName).maybeSingle();
-        if (existing) return res.json({ success: true, message: "Apartment already exists" });
+        if (existing) return res.json({ success: false, message: "Apartment already exists" });
 
         const { data, error } = await supabaseAdmin.from("apartments").insert({ name: trimmedName, pincode: pincode || "", locality: locality || "", zone: zone || "" }).select().maybeSingle();
         if (error) throw error;

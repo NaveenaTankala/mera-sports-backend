@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "../config/supabaseClient.js";
 import { uploadBase64 } from "../utils/uploadHelper.js";
+import { createNotification } from "../services/notificationService.js";
 
 // GET /api/admin/list-admins
 export const listAdmins = async (req, res) => {
@@ -345,6 +346,39 @@ export const updateAdminRole = async (req, res) => {
             .eq("id", targetAdminId);
 
         if (error) throw error;
+
+        // --- NOTIFICATIONS ---
+        // Fetch names for notification text
+        const { data: targetAdmin } = await supabaseAdmin.from("users").select("name").eq("id", targetAdminId).single();
+        const targetName = targetAdmin?.name || 'A user';
+
+        const isPromotion = role === 'superadmin';
+
+        // 1. Notify the target admin
+        await createNotification(
+            targetAdminId,
+            isPromotion ? "Promoted to Super Admin" : "Demoted to Admin",
+            isPromotion ? "You have been promoted to Super Admin role." : "Your role has been updated to Admin.",
+            "info",
+            "/admin-profile"
+        ).catch(err => console.error("Target notification failed", err));
+
+        // 2. Notify all super admins
+        const { data: superAdmins } = await supabaseAdmin.from("users").select("id").eq("role", "superadmin");
+        if (superAdmins) {
+            const notificationPromises = superAdmins
+                .filter(sa => sa.id !== targetAdminId) // Don't send the generic one to the newly promoted admin
+                .map(sa => {
+                    return createNotification(
+                        sa.id,
+                        isPromotion ? "Admin Promoted" : "Super Admin Demoted",
+                        `${targetName} has been ${isPromotion ? 'promoted to Super Admin' : 'demoted to Admin'}.`,
+                        "info",
+                        "/settings"
+                    );
+                });
+            await Promise.allSettled(notificationPromises);
+        }
 
         res.json({ success: true, message: `Admin role updated to ${role}` });
     } catch (err) {
