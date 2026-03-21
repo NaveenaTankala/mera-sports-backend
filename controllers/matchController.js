@@ -1740,7 +1740,12 @@ export const finalizeRoundMatches = async (req, res) => {
                     }
                 }
 
-                finalScore = { sets: sets };
+                finalScore = {
+                    sets: sets,
+                    ...(Array.isArray(score.homePlayerGoals) ? { homePlayerGoals: score.homePlayerGoals } : {}),
+                    ...(Array.isArray(score.awayPlayerGoals) ? { awayPlayerGoals: score.awayPlayerGoals } : {}),
+                    ...(score.playerGoals && typeof score.playerGoals === 'object' ? { playerGoals: score.playerGoals } : {}),
+                };
             } else {
                 const p1Score = parseInt(score?.player1 || score?.player_a || 0);
                 const p2Score = parseInt(score?.player2 || score?.player_b || 0);
@@ -1753,7 +1758,12 @@ export const finalizeRoundMatches = async (req, res) => {
                     });
                 }
 
-                finalScore = { sets: [{ player1: p1Score, player2: p2Score }] };
+                finalScore = {
+                    sets: [{ player1: p1Score, player2: p2Score }],
+                    ...(Array.isArray(score?.homePlayerGoals) ? { homePlayerGoals: score.homePlayerGoals } : {}),
+                    ...(Array.isArray(score?.awayPlayerGoals) ? { awayPlayerGoals: score.awayPlayerGoals } : {}),
+                    ...(score?.playerGoals && typeof score.playerGoals === 'object' ? { playerGoals: score.playerGoals } : {}),
+                };
 
                 // Extract valid player ids (never use empty objects)
                 const winnerIdA = getPlayerId(effectivePlayerA);
