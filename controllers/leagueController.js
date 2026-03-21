@@ -80,12 +80,14 @@ export const getLeagueConfig = async (req, res) => {
             });
         }
 
+        const isHeatConfig = data?.rules?.format === "HEAT";
+
         //console.log(`✅ Found league config: categoryId=${data.category_id}, participants=${data.participants?.length || 0}`);
         
         return res.json({
             success: true,
             league: {
-                format: "LEAGUE",
+                format: isHeatConfig ? "HEAT" : "LEAGUE",
                 participants: Array.isArray(data.participants) ? data.participants : [],
                 rules: data.rules || {
                     pointsWin: 3,
@@ -125,25 +127,29 @@ export const saveLeagueConfig = async (req, res) => {
             return res.status(400).json({ success: false, message: "At least one participant is required" });
         }
 
+        const isHeatConfig = rules?.format === "HEAT";
+
         // Clean and deduplicate participants
-        // IMPORTANT: preserve group assignment (p.group) so group mode survives reloads
-        // Also preserve team league fields: isTeam, isBye, members, captainName, teamId
+        // LEAGUE: preserve legacy fields used by existing league/team flows.
+        // HEAT: preserve payload fields (seed/avatar/etc.) while still validating id/name.
         const participantMap = new Map();
         participants.forEach((p) => {
             if (p && p.id && p.name) {
                 const id = String(p.id);
                 const name = String(p.name);
-                const group = p.group || p.group_id || p.groupLabel || null;
-                // Only keep first occurrence if duplicate IDs exist
                 if (!participantMap.has(id)) {
-                    const entry = { id, name, ...(group ? { group: String(group) } : {}) };
-                    // Preserve team league fields if present
-                    if (p.isTeam) entry.isTeam = true;
-                    if (p.isBye) entry.isBye = true;
-                    if (p.teamId) entry.teamId = String(p.teamId);
-                    if (p.captainName) entry.captainName = String(p.captainName);
-                    if (Array.isArray(p.members) && p.members.length > 0) entry.members = p.members;
-                    participantMap.set(id, entry);
+                    if (isHeatConfig) {
+                        participantMap.set(id, { ...p, id, name });
+                    } else {
+                        const group = p.group || p.group_id || p.groupLabel || null;
+                        const entry = { id, name, ...(group ? { group: String(group) } : {}) };
+                        if (p.isTeam) entry.isTeam = true;
+                        if (p.isBye) entry.isBye = true;
+                        if (p.teamId) entry.teamId = String(p.teamId);
+                        if (p.captainName) entry.captainName = String(p.captainName);
+                        if (Array.isArray(p.members) && p.members.length > 0) entry.members = p.members;
+                        participantMap.set(id, entry);
+                    }
                 }
             }
         });
@@ -161,9 +167,12 @@ export const saveLeagueConfig = async (req, res) => {
             setsPerMatch: 1
         };
 
-        // Preserve all rule fields sent from frontend (win, loss, draw, setsPerMatch)
-        // Also support backend format (pointsWin, pointsLoss, pointsDraw)
-        const cleanedRules = {
+        // Preserve all rule fields for HEAT flow.
+        // For LEAGUE, keep current normalisation/backward compatibility.
+        const cleanedRules = isHeatConfig ? {
+            ...rules,
+            format: "HEAT"
+        } : {
             // Support both frontend format (win/loss/draw) and backend format (pointsWin/pointsLoss/pointsDraw)
             win: typeof rules?.win === "number" ? rules.win : (typeof rules?.pointsWin === "number" ? rules.pointsWin : defaultRules.pointsWin),
             loss: typeof rules?.loss === "number" ? rules.loss : (typeof rules?.pointsLoss === "number" ? rules.pointsLoss : defaultRules.pointsLoss),
@@ -191,6 +200,13 @@ export const saveLeagueConfig = async (req, res) => {
         // Store the categoryId as-is if provided (leagues.category_id is TEXT, so accepts any string)
         const categoryIdValue = categoryId ? String(categoryId) : null;
         let categoryLabelValue = categoryLabel || categoryId || "Unknown";
+
+        // HEAT rounds are stored using category_id keys such as <base>_HR2.
+        // Use category_id as label to avoid round collisions in environments where
+        // leagues table unique constraints include category_label.
+        if (isHeatConfig && categoryIdValue) {
+            categoryLabelValue = categoryIdValue;
+        }
 
         // FIX: If we already have a record for this category_id, use ITS category_label
         // to prevent creating duplicate rows when categoryLabel differs between calls
@@ -221,27 +237,53 @@ export const saveLeagueConfig = async (req, res) => {
             updated_at: new Date().toISOString()
         };
 
-        const { data, error } = await supabaseAdmin
-            .from("leagues")
-            .upsert(upsertPayload, {
-                // The database has a unique constraint on (event_id, category_label)
-                // Pass the column names that make up the constraint
-                onConflict: "event_id,category_label"
-            })
-            .select()
-            .maybeSingle();
+        let data = null;
+        let error = null;
+
+        if (isHeatConfig && categoryIdValue) {
+            const { data: existingByCategoryId } = await supabaseAdmin
+                .from("leagues")
+                .select("id")
+                .eq("event_id", eventId)
+                .eq("category_id", categoryIdValue)
+                .maybeSingle();
+
+            if (existingByCategoryId?.id) {
+                ({ data, error } = await supabaseAdmin
+                    .from("leagues")
+                    .update(upsertPayload)
+                    .eq("id", existingByCategoryId.id)
+                    .select()
+                    .maybeSingle());
+            } else {
+                ({ data, error } = await supabaseAdmin
+                    .from("leagues")
+                    .insert(upsertPayload)
+                    .select()
+                    .maybeSingle());
+            }
+        } else {
+            ({ data, error } = await supabaseAdmin
+                .from("leagues")
+                .upsert(upsertPayload, {
+                    onConflict: "event_id,category_label"
+                })
+                .select()
+                .maybeSingle());
+        }
 
         if (error) {
             console.error(`❌ Upsert failed for categoryId=${categoryId}: ${error.code} - ${error.message}`);
             throw error;
         }
 
-        console.log(`✅ League saved successfully for categoryId=${categoryId}`);
+        
+        //console.log(`✅ League saved successfully for categoryId=${categoryId}`);
 
         return res.status(201).json({
             success: true,
             league: {
-                format: "LEAGUE",
+                format: isHeatConfig ? "HEAT" : "LEAGUE",
                 participants: cleanedParticipants,
                 rules: cleanedRules
             },
