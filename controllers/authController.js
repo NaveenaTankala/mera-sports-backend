@@ -561,7 +561,8 @@ export const loginPlayer = async (req, res) => {
             }
         } else {
             // Fallback: try player_id or aadhaar
-            const { data } = await supabaseAdmin.from("users").select("*").or(`player_id.eq.${input},aadhaar.eq.${input}`).maybeSingle();
+            // Use ilike for case-insensitive matching of player_id (e.g. p1139 vs P1139)
+            const { data } = await supabaseAdmin.from("users").select("*").or(`player_id.ilike.${input},aadhaar.eq.${input}`).maybeSingle();
             user = data;
         }
 
