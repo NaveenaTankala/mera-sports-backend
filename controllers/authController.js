@@ -740,7 +740,7 @@ export const loginInstitute = async (req, res) => {
         // 401 — email not found in DB
         if (!user) {
             console.log("❌ [LoginInstitute] STEP 1 FAILED — No user found with email:", email);
-            return res.status(401).json({ message: "Invalid credentials" });
+            return res.status(401).json({ message: "This account is not registered as an institute." });
         }
 
         console.log("✅ [LoginInstitute] STEP 1 PASSED — User found. role:", user.role, "| verification:", user.verification);
@@ -748,7 +748,7 @@ export const loginInstitute = async (req, res) => {
         // 401 — role mismatch (not an institute account)
         if (user.role !== 'institutehead') {
             console.log("❌ [LoginInstitute] STEP 2 FAILED — Role mismatch. DB role is:", user.role, "| Expected: institutehead");
-            return res.status(401).json({ message: "Invalid credentials" });
+            return res.status(401).json({ message: "This account is not registered as an institute." });
         }
 
         console.log("✅ [LoginInstitute] STEP 2 PASSED — Role is institutehead");
@@ -792,6 +792,9 @@ export const loginInstitute = async (req, res) => {
                 id: user.id,
                 instituteName: user.institute_name || user.name,
                 email: user.email,
+                mobile: user.mobile,
+                website: user.website,
+                apartment: user.apartment,
                 role: user.role,
                 status: user.verification   // 'pending' | 'verified' | 'rejected'
             },
@@ -918,3 +921,5 @@ export const reapplyGoogleAdmin = async (req, res) => {
         res.status(500).json({ message: "Server error" });
     }
 };
+
+

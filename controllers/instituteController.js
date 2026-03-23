@@ -4,6 +4,52 @@ import * as xlsx from "xlsx";
 import { supabaseAdmin } from "../config/supabaseClient.js";
 
 // 1. POST /api/institute/request-bulk-approval
+export const updateInstituteProfile = async (req, res) => {
+    try {
+        const { id: institute_id } = req.user;
+        const { instituteName, email, contactNumber, website, address } = req.body;
+
+        if (!instituteName || !email || !contactNumber) {
+            return res.status(400).json({ success: false, message: "Institute Name, Email, and Contact Number are required." });
+        }
+
+        const { data, error } = await supabaseAdmin
+            .from("users")
+            .update({
+                name: instituteName,
+                institute_name: instituteName,
+                email: email,
+                mobile: contactNumber,
+                website: website || null,
+                apartment: address || null
+            })
+            .eq("id", institute_id)
+            .select("id, institute_name, name, email, role, verification")
+            .single();
+
+        if (error) {
+            console.error("Supabase update error:", error);
+            return res.status(500).json({ success: false, message: "Failed to update profile to database." });
+        }
+
+        res.json({
+            success: true,
+            message: "Profile updated successfully.",
+            user: {
+                id: data.id,
+                instituteName: data.institute_name || data.name,
+                email: data.email,
+                role: data.role,
+                status: data.verification
+            }
+        });
+    } catch (err) {
+        console.error("UPDATE INSTITUTE ERROR:", err);
+        res.status(500).json({ success: false, message: "Internal server error while updating profile." });
+    }
+};
+
+// 2. POST /api/institute/request-bulk-approval
 export const requestBulkApproval = async (req, res) => {
     try {
         const { id: institute_id } = req.user;
