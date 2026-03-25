@@ -527,8 +527,12 @@ export const deleteLeague = async (req, res) => {
 
         let { data: leagueRecord, error: fetchError } = await query.maybeSingle();
 
-        // Fallback: if not found by category_id and it's non-UUID, try category_label
-        if (!leagueRecord && categoryId && !isUuid(categoryId)) {
+        const isRoundScopedCategoryId = categoryId && /_R\d+$/i.test(String(categoryId).trim());
+
+        // Fallback: if not found by category_id and it's non-UUID, try category_label.
+        // IMPORTANT: never do this for explicit round-scoped IDs (e.g. <base>_R2),
+        // otherwise a malformed/legacy row can map deletion to the wrong round.
+        if (!leagueRecord && categoryId && !isUuid(categoryId) && !isRoundScopedCategoryId) {
             const fallbackQuery = supabaseAdmin
                 .from("leagues")
                 .select("*")
