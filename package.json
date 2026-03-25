@@ -13,6 +13,8 @@
     "seed:multi": "node scripts/seed_multi_category_event.js",
     "seed:football": "node scripts/seed_football_event.js",
     "seed:team-league": "node scripts/seed_team_league.js",
+    "seed:volleyball-league": "node scripts/seed_volleyball_league_event.js",
+    "seed:chess-league": "node scripts/seed_chess_league_event.js",
     "seed:heat-events": "node scripts/seed_heat_events.js",
     "migrate:passwords": "node scripts/migrate_passwords_bcrypt.js"
   },
