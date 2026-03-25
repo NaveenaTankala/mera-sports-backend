@@ -1,5 +1,6 @@
 import express from "express";
 import {
+    updateInstituteProfile,
     requestBulkApproval,
     getApprovalStatus,
     finalizeBulkImport,
@@ -9,7 +10,10 @@ import { verifyInstitute } from "../middleware/rbacMiddleware.js";
 
 const router = express.Router();
 
-// 1. POST /api/institute/request-bulk-approval
+// 1. PUT /api/institute/profile
+router.put("/profile", verifyInstitute, updateInstituteProfile);
+
+// 2. POST /api/institute/request-bulk-approval
 router.post("/request-bulk-approval", verifyInstitute, requestBulkApproval);
 
 // 2. GET /api/institute/approval-status

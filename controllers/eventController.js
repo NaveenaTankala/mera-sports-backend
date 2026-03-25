@@ -477,7 +477,24 @@ export const getEventBrackets = async (req, res) => {
             }
             // Include if published is true, or if published field doesn't exist (backward compatibility)
             // If explicitly false, exclude it.
-            return bracket.published !== false;
+            if (bracket.published === false) {
+                return false;
+            }
+
+            // Validate bracket data integrity: BRACKET mode must have at least one round
+            // with matches to be considered valid. This prevents exposing empty/incomplete
+            // brackets that were initialized but never populated.
+            if (bracket.mode === 'BRACKET') {
+                const bd = bracket.bracket_data || bracket.draw_data;
+                if (!bd) return false;
+                const rounds = bd.rounds;
+                if (!Array.isArray(rounds) || rounds.length === 0) return false;
+                // At least one round must have at least one match
+                const hasMatches = rounds.some(r => Array.isArray(r.matches) && r.matches.length > 0);
+                if (!hasMatches) return false;
+            }
+
+            return true;
         });
 
         // Format brackets - return visible brackets (frontend will handle additional filtering for display)

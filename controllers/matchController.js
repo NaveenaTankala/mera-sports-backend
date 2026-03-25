@@ -2525,37 +2525,6 @@ export const getPublicMatches = async (req, res) => {
         // Query Supabase directly with exact filters - DO NOT fetch all matches first
         // This eliminates all contamination from matches with wrong/null category_id
         if (isLeagueRequest && categoryId) {
-            // First check if the league bracket is published
-            let bracketQuery = supabaseAdmin
-                .from('event_brackets')
-                .select('published')
-                .eq('event_id', eventId);
-            
-            if (isUuid(categoryId)) {
-                // If it's a UUID, check category_id
-                bracketQuery = bracketQuery.eq('category_id', categoryId);
-            } else if (categoryName) {
-                // Fallback to categoryName if provided
-                bracketQuery = bracketQuery.eq('category', categoryName);
-            } else {
-                // Try categoryId as a label fallback
-                bracketQuery = bracketQuery.eq('category', categoryId);
-            }
-
-            const { data: bracketData, error: bracketError } = await bracketQuery.limit(1);
-
-            if (bracketError) {
-                throw bracketError;
-            }
-
-            // If no bracket exists, or it's explicitly not published, return empty matches
-            if (!bracketData || bracketData.length === 0 || !bracketData[0].published) {
-                return res.status(200).json({
-                    success: true,
-                    matches: []
-                });
-            }
-
             // Fetch League Matches
             let matchQuery = supabaseAdmin
                 .from('matches')
