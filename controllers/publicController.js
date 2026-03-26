@@ -78,6 +78,105 @@ export const getPublicSettings = async (req, res) => {
 };
 
 /**
+ * Public: Get league config (participants + rules) for a category.
+ * GET /api/public/events/:id/categories/:categoryId/league
+ * Query: categoryLabel or category (optional fallback when categoryId is not present)
+ */
+export const getPublicLeagueConfig = async (req, res) => {
+    try {
+        const { id: eventIdentifier, categoryId } = req.params;
+        const rawCategoryLabel = req.query.categoryLabel || req.query.category;
+        const categoryLabel = rawCategoryLabel ? sanitizeFilterInput(rawCategoryLabel) : null;
+
+        if (!eventIdentifier) {
+            return res.status(400).json({ success: false, message: "Event ID required" });
+        }
+
+        const eventId = await resolveEventIdByIdentifier(eventIdentifier);
+        if (!eventId) {
+            return res.status(404).json({ success: false, message: "Event not found" });
+        }
+
+        if (!categoryId && !categoryLabel) {
+            return res.status(400).json({ success: false, message: "Category ID or label required" });
+        }
+
+        let query = supabaseAdmin
+            .from("leagues")
+            .select("*")
+            .eq("event_id", eventId);
+
+        if (categoryId) {
+            query = query.eq("category_id", String(categoryId));
+        } else if (categoryLabel) {
+            query = query.eq("category_label", categoryLabel);
+        }
+
+        let { data, error } = await query.maybeSingle();
+
+        if (error && error.code !== "PGRST116") {
+            throw error;
+        }
+
+        if (!data && categoryId && !isUuid(categoryId)) {
+            const fallback = await supabaseAdmin
+                .from("leagues")
+                .select("*")
+                .eq("event_id", eventId)
+                .eq("category_label", String(categoryId))
+                .maybeSingle();
+
+            if (!fallback.error || fallback.error.code === "PGRST116") {
+                data = fallback.data;
+            }
+        }
+
+        if (!data) {
+            return res.json({
+                success: true,
+                league: {
+                    format: "LEAGUE",
+                    participants: [],
+                    rules: {
+                        pointsWin: 3,
+                        pointsLoss: 0,
+                        pointsDraw: 1,
+                        win: 3,
+                        loss: 0,
+                        draw: 1,
+                    },
+                },
+            });
+        }
+
+        const rawRules = data.rules || {};
+        const pointsWin = Number(rawRules.pointsWin ?? rawRules.win ?? 3);
+        const pointsLoss = Number(rawRules.pointsLoss ?? rawRules.loss ?? 0);
+        const pointsDraw = Number(rawRules.pointsDraw ?? rawRules.draw ?? 1);
+
+        return res.json({
+            success: true,
+            league: {
+                format: rawRules.format === "HEAT" ? "HEAT" : "LEAGUE",
+                participants: Array.isArray(data.participants) ? data.participants : [],
+                rules: {
+                    ...rawRules,
+                    pointsWin: Number.isFinite(pointsWin) ? pointsWin : 3,
+                    pointsLoss: Number.isFinite(pointsLoss) ? pointsLoss : 0,
+                    pointsDraw: Number.isFinite(pointsDraw) ? pointsDraw : 1,
+                    win: Number.isFinite(pointsWin) ? pointsWin : 3,
+                    loss: Number.isFinite(pointsLoss) ? pointsLoss : 0,
+                    draw: Number.isFinite(pointsDraw) ? pointsDraw : 1,
+                },
+            },
+        });
+    } catch (err) {
+        console.error("PUBLIC GET LEAGUE CONFIG ERROR:", err);
+        return res.status(500).json({ success: false, message: "Failed to fetch public league config" });
+    }
+};
+
+/**
  * Public: Get published draw/bracket for a category
  * GET /api/public/events/:id/categories/:categoryId/draw
  * Query: categoryLabel or category (if no categoryId)
