@@ -1,5 +1,5 @@
 import express from "express";
-import { getPublicCategoryDraw, getPublicEventDraws, getPublicSettings, listPublicEvents } from "../controllers/publicController.js";
+import { getPublicCategoryDraw, getPublicEventDraws, getPublicLeagueConfig, getPublicSettings, listPublicEvents } from "../controllers/publicController.js";
 
 const router = express.Router();
 
@@ -10,5 +10,7 @@ router.get("/events/list", listPublicEvents);
 router.get("/events/:id/categories/:categoryId/draw", getPublicCategoryDraw);
 router.get("/events/:id/categories/draw", getPublicCategoryDraw); // Alternative with categoryLabel query
 router.get("/events/:id/draws", getPublicEventDraws); // All published draws for an event
+router.get("/events/:id/categories/:categoryId/league", getPublicLeagueConfig);
+router.get("/events/:id/categories/league", getPublicLeagueConfig); // Alternative with categoryLabel query
 
 export default router;
